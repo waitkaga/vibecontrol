@@ -26,6 +26,7 @@ Issue 跟踪和 ADR 流程只适用于大型结构性重构或实质功能变更
 - 主函数只写正常流程，校验和细节放到它下面的小函数里。
 - 注释只写不明显的约束和反直觉的行为，不给显而易见的代码写注释。
 - 自动生成的文件不要手改，改源头后重新生成。
+- Windows 驱动包（包括 INF）必须保留原厂签名字节，禁止换行或编码归一化。更新整包后，使用原 CAT 校验 INF 和 DLL/SYS，并同步更新 `test/windows-nsis.test.mjs` 中的 SHA-256。
 - 测试测真实实现，不要把业务逻辑抄一份进测试。尽量少用 mock。
 - 按仓库现有的流程走，不要引入仓库没在用的工具或流程。
 - 涉及UI, Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.
