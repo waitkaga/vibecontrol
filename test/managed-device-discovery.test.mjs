@@ -31,6 +31,7 @@ const xboxDefinition = compile('src/devices/xbox-controller/definition.ts', {
   './inputs.ts': require('../src/devices/xbox-controller/inputs.ts'),
 })
 const modelImports = {
+  '../../appStorage.ts': require('../src/appStorage.ts'),
   '../xiaomi-remote/definition.ts': require('../src/devices/xiaomi-remote/definition.ts'),
   '../cmiot-a15-remote/definition.ts': require('../src/devices/cmiot-a15-remote/definition.ts'),
   '../xm-bt-29-remote/definition.ts': require('../src/devices/xm-bt-29-remote/definition.ts'),
@@ -42,6 +43,7 @@ const modelImports = {
   '../hisense-rcf3b65-remote/definition.ts': require('../src/devices/hisense-rcf3b65-remote/definition.ts'),
   '../phicomm-db1-r-remote/definition.ts': require('../src/devices/phicomm-db1-r-remote/definition.ts'),
   '../kivo-k18-lite/definition.ts': require('../src/devices/kivo-k18-lite/definition.ts'),
+  '../g17-touch/definition.ts': require('../src/devices/g17-touch/definition.ts'),
   '../xbox-controller/index.ts': xboxDefinition,
 }
 const model = compile('src/devices/integration/model.ts', modelImports)
@@ -57,6 +59,7 @@ const modelMarkdown = compile('src/devices/integration/ModelMarkdown.tsx', {
 const { DeviceHub: ControlledDeviceHub, DeviceDiscoverySection } = compile('src/devices/integration/DeviceHub.tsx', {
   'react-dom': { createPortal: node => node },
   '@tauri-apps/api/event': { listen: async () => () => {} },
+  '../../appStorage': require('../src/appStorage.ts'),
   '../../cloud/BehaviorLibraryContext': behaviorLibraryContext,
   '../../cloud/useDeviceModelCatalog': useDeviceModelCatalog,
   './InstanceWorkspace': { InstanceWorkspace: props => React.createElement('instance-workspace', props) },
@@ -455,6 +458,7 @@ test('bundled capabilities retain recording defaults and platform support for al
     ['tclRc802a', 'hold', true], ['tclRc902n', 'click', false], ['tclRc902v', 'click', false],
     ['hisenseRcf3b65', 'click', false], ['phicommDb1R', 'click', false],
     ['kivoK18Lite', 'click', false, false, true],
+    ['g17Touch', 'click', false, false, true],
   ]) {
     assert.equal(model.newInstance(kind, null).cmiotA15RecordingMode, mode)
     assert.equal(model.usesHidVoice(kind), hidVoice)
@@ -646,6 +650,7 @@ test('A15 workspace scopes driver actions, recording mode and input feedback to 
     }),
     '../../components/DeviceRail': compile('src/components/DeviceRail.tsx'),
     '../../components/WorkflowAxonkey': { WorkflowAxonkey },
+    '../../components/QuickOverlayConfigurator': { QuickOverlayConfigurator: () => null },
     '../../components/workflowSplitLayout': require('../src/components/workflowSplitLayout.ts'),
     '../shared/DeviceWorkspaceHeader': compile('src/devices/shared/DeviceWorkspaceHeader.tsx'),
     '../shared/DeviceSettingsDrawer': compile('src/devices/shared/DeviceSettingsDrawer.tsx', {
@@ -891,6 +896,7 @@ test('A15 workspace scopes driver actions, recording mode and input feedback to 
       ['tclRc802a', true, false, false, true], ['tclRc902n', true, false, true, true], ['tclRc902v', true, false, true, true],
       ['hisenseRcf3b65', true, false, false, false], ['phicommDb1R', true, false, false, false],
       ['kivoK18Lite', false, false, false, false],
+      ['g17Touch', false, false, false, false],
     ]) {
       act(() => {
         instances[1] = { ...instances[1], kind }
@@ -1182,6 +1188,7 @@ test('managed device workspace renders undo/redo header actions, handles shortcu
     }),
     '../../components/DeviceRail': compile('src/components/DeviceRail.tsx'),
     '../../components/WorkflowAxonkey': { WorkflowAxonkey },
+    '../../components/QuickOverlayConfigurator': { QuickOverlayConfigurator: () => null },
     '../../components/workflowSplitLayout': require('../src/components/workflowSplitLayout.ts'),
     '../shared/DeviceWorkspaceHeader': compile('src/devices/shared/DeviceWorkspaceHeader.tsx'),
     '../shared/DeviceSettingsDrawer': compile('src/devices/shared/DeviceSettingsDrawer.tsx', {
@@ -1426,6 +1433,7 @@ test('discovery help troubleshoot button opens ConnectionTroubleshootPage in Dev
   const { DeviceHub: TestHub, DeviceDiscoverySection: TestDiscovery } = compile('src/devices/integration/DeviceHub.tsx', {
     'react-dom': { createPortal: node => node },
     '@tauri-apps/api/event': { listen: async () => () => {} },
+    '../../appStorage': require('../src/appStorage.ts'),
     '../../cloud/BehaviorLibraryContext': behaviorLibraryContext,
     '../../cloud/useDeviceModelCatalog': useDeviceModelCatalog,
     './InstanceWorkspace': { InstanceWorkspace: props => React.createElement('instance-workspace', props) },
@@ -1606,6 +1614,7 @@ test('Kivo K18 Lite workspace uses wide single-lane trigger tabs without Windows
     }),
     '../../components/DeviceRail': compile('src/components/DeviceRail.tsx'),
     '../../components/WorkflowAxonkey': { WorkflowAxonkey },
+    '../../components/QuickOverlayConfigurator': { QuickOverlayConfigurator: () => null },
     '../../components/workflowSplitLayout': require('../src/components/workflowSplitLayout.ts'),
     '../shared/DeviceWorkspaceHeader': compile('src/devices/shared/DeviceWorkspaceHeader.tsx'),
     '../shared/DeviceSettingsDrawer': compile('src/devices/shared/DeviceSettingsDrawer.tsx', {
@@ -1827,6 +1836,7 @@ test('rail configured overview shows only configured buttons, excludes sticks/tr
     }),
     '../../components/DeviceRail': compile('src/components/DeviceRail.tsx'),
     '../../components/WorkflowAxonkey': { WorkflowAxonkey },
+    '../../components/QuickOverlayConfigurator': { QuickOverlayConfigurator: () => null },
     '../../components/workflowSplitLayout': require('../src/components/workflowSplitLayout.ts'),
     '../shared/DeviceWorkspaceHeader': compile('src/devices/shared/DeviceWorkspaceHeader.tsx'),
     '../shared/DeviceSettingsDrawer': compile('src/devices/shared/DeviceSettingsDrawer.tsx', {
