@@ -18,6 +18,8 @@ import { behaviorSummary } from '../src/behaviorSummary.ts'
 import { createBehavior } from '../src/behaviorModel.ts'
 import { createSavedSequence } from '../src/savedSequences.ts'
 import {
+  buildQuickPromptSequence,
+  extractQuickPrompt,
   insertQuickOverlaySteps,
   moveQuickOverlayStep,
   quickOverlayAllowsToolboxStep,
@@ -154,4 +156,101 @@ test('quick configuration commits valid action defaults without requiring an edi
     assert.equal(needsEdit, false, `${platform}: ${type}`)
     assert.deepEqual(additions, [{ id: type, enabled: true, ...value }])
   }
+})
+
+test('extractQuickPrompt and buildQuickPromptSequence round-trip prompts while detecting non-prompt sequences', () => {
+  assert.deepEqual(extractQuickPrompt([], 'macos'), { kind: 'empty' })
+
+  const pasteOnly = [createBehavior({ id: 'p1', type: 'paste', text: '解释以下代码', title: '代码解释' })]
+  assert.deepEqual(extractQuickPrompt(pasteOnly, 'macos'), {
+    kind: 'prompt',
+    prompt: { title: '代码解释', content: '解释以下代码', method: 'paste', autoEnter: false },
+  })
+
+  const typeAndEnter = [
+    createBehavior({ id: 't1', type: 'typeText', text: 'npm test', title: '跑测试' }),
+    createBehavior({ id: 'd1', type: 'delay', ms: 30 }),
+    createBehavior({ id: 'e1', type: 'key', key: 'Enter' }),
+  ]
+  assert.deepEqual(extractQuickPrompt(typeAndEnter, 'macos'), {
+    kind: 'prompt',
+    prompt: { title: '跑测试', content: 'npm test', method: 'typeText', autoEnter: true },
+  })
+
+  const directEnter = [
+    createBehavior({ id: 'p2', type: 'paste', text: 'ok' }),
+    createBehavior({ id: 'e2', type: 'key', key: 'Return' }),
+  ]
+  assert.deepEqual(extractQuickPrompt(directEnter, 'macos'), {
+    kind: 'prompt',
+    prompt: { title: '', content: 'ok', method: 'paste', autoEnter: true },
+  })
+
+  const nonPrompt = [
+    createBehavior({ id: 's1', type: 'shortcut', keys: ['Ctrl', 'C'] }),
+    createBehavior({ id: 'p3', type: 'paste', text: 'summary' }),
+  ]
+  const inspectedOther = extractQuickPrompt(nonPrompt, 'windows')
+  assert.equal(inspectedOther.kind, 'other')
+  assert.match(inspectedOther.summary, /Ctrl \+ C/)
+
+  assert.deepEqual(
+    buildQuickPromptSequence({ title: '   ', content: '', method: 'paste', autoEnter: true }, pasteOnly),
+    [],
+  )
+
+  const built = buildQuickPromptSequence(
+    { title: '  新标题  ', content: '生成测试用例', method: 'typeText', autoEnter: true },
+    typeAndEnter,
+  )
+  assert.equal(built.length, 3)
+  assert.equal(built[0].id, 't1')
+  assert.equal(built[0].title, '新标题')
+  assert.equal(built[1].id, 'd1')
+  assert.equal(built[2].id, 'e1')
+})
+
+test('quick overlay trigger binding moves cleanly across inputs/triggers and unbinds without leaving stale references', async () => {
+  const { bindQuickOverlayTrigger, findQuickOverlayTriggerBinding, hasExistingNonQuickBehavior } = await import(
+    '../src/devices/integration/instanceProfiles.ts'
+  )
+  const { newInstance } = await import('../src/devices/integration/model.ts')
+
+  let instance = newInstance('rc003', null)
+  instance = {
+    ...instance,
+    profiles: [
+      {
+        id: 'default',
+        name: '默认配置',
+        behaviors: {
+          confirm: { click: [{ id: 'b1', enabled: true, type: 'mouse', button: 'left' }], doubleClick: [], longPress: [] },
+        },
+      },
+      { id: 'q1', name: '快捷交互', quick: true, behaviors: {} },
+    ],
+  }
+
+  assert.equal(hasExistingNonQuickBehavior(instance.profiles[0], 'confirm', 'click', 'q1'), true)
+  assert.equal(hasExistingNonQuickBehavior(instance.profiles[0], 'menu', 'longPress', 'q1'), false)
+
+  instance = bindQuickOverlayTrigger(instance, 'q1', 'default', 'menu', 'longPress')
+  assert.deepEqual(findQuickOverlayTriggerBinding(instance, 'q1'), {
+    profileId: 'default',
+    inputId: 'menu',
+    trigger: 'longPress',
+  })
+
+  // Move to another trigger cleanly clears the prior binding
+  instance = bindQuickOverlayTrigger(instance, 'q1', 'default', 'tv', 'doubleClick')
+  assert.equal(instance.profiles[0].behaviors.menu, undefined)
+  assert.deepEqual(findQuickOverlayTriggerBinding(instance, 'q1'), {
+    profileId: 'default',
+    inputId: 'tv',
+    trigger: 'doubleClick',
+  })
+
+  // Unbind cleanly removes quickOverlay action
+  instance = bindQuickOverlayTrigger(instance, 'q1', 'default', '', 'click')
+  assert.equal(findQuickOverlayTriggerBinding(instance, 'q1'), null)
 })

@@ -7,6 +7,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ClipboardCopy,
   ClipboardPaste,
   Copy,
   Clock3,
@@ -24,9 +25,11 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Send,
   SkipBack,
   SkipForward,
   Square,
+  Terminal,
   Trash2,
   Volume1,
   Volume2,
@@ -36,9 +39,15 @@ import {
 import type { Behavior, TriggerType } from '../behaviorModel'
 import {
   defaultCursorDistance,
+  httpRequestMethods,
   maxCursorDistance,
+  maxHttpBodyLength,
   normalizeApplicationPath,
   normalizeFilePath,
+  normalizeHttpBody,
+  normalizeHttpHeaders,
+  normalizeHttpMethod,
+  normalizeShellCommand,
   normalizeWebsiteUrl,
   parseSequenceImport,
 } from '../behaviorModel'
@@ -60,6 +69,8 @@ import {
 import type { AdvancedBehaviorType, CommonBehaviorPreset, Platform, MappingInput } from '../appTypes'
 import type { KeyboardEvent, ReactNode, RefObject } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { useMappingDialogFocus } from './useMappingDialogFocus'
 
 function mappingTriggerLabel(button: MappingInput<string>, trigger: TriggerType) {
   return [button.contextLabel, button.triggerLabel ?? triggerLabels[trigger]].filter(Boolean).join(' · ')
@@ -76,11 +87,11 @@ function rightModifierGlyph(key: string, platform: Platform) {
   return 'Ctrl'
 }
 
-type BehaviorEditorProps = {
+type BehaviorEditorProps<Id extends string> = {
   editorRef: RefObject<HTMLElement>
   attention: boolean
   platform: Platform
-  button: MappingInput
+  button: MappingInput<Id>
   trigger: TriggerType
   behaviors: Behavior[]
   onApplyCommonBehavior: (preset: CommonBehaviorPreset) => void
@@ -113,7 +124,7 @@ function BehaviorActionButton({ icon, label, detail, onClick }: BehaviorActionBu
   )
 }
 
-export function BehaviorEditor({
+export function BehaviorEditor<Id extends string>({
   editorRef,
   attention,
   platform,
@@ -129,7 +140,7 @@ export function BehaviorEditor({
   onCopySequence,
   onPasteSequence,
   onClearSequence,
-}: BehaviorEditorProps) {
+}: BehaviorEditorProps<Id>) {
   const [activeTab, setActiveTab] = useState<BehaviorEditorTab>('common')
   const tabId = `behavior-${button.id}-${trigger}`
   return (
@@ -345,6 +356,34 @@ export function BehaviorEditor({
                   onClick={() => onApplyCommonBehavior('customKey')}
                 />
                 <BehaviorActionButton
+                  icon={<Copy size={17} />}
+                  label="复制"
+                  detail={`${keyDisplayName(platform === 'macos' ? 'Win' : 'Ctrl', platform)} + C`}
+                  onClick={() => onApplyCommonBehavior('copy')}
+                />
+                <BehaviorActionButton
+                  icon={<ClipboardPaste size={17} />}
+                  label="粘贴"
+                  detail={`${keyDisplayName(platform === 'macos' ? 'Win' : 'Ctrl', platform)} + V`}
+                  onClick={() => onApplyCommonBehavior('pasteShortcut')}
+                />
+                <BehaviorActionButton
+                  icon={<ClipboardCopy size={17} />}
+                  label="写入剪贴板"
+                  detail="仅写入文本，不粘贴"
+                  onClick={() => onApplyCommonBehavior('copyText')}
+                />
+                <BehaviorActionButton
+                  icon={<Terminal size={17} />}
+                  label="执行命令"
+                  onClick={() => onApplyCommonBehavior('runCommand')}
+                />
+                <BehaviorActionButton
+                  icon={<Send size={17} />}
+                  label="发送 HTTP 请求"
+                  onClick={() => onApplyCommonBehavior('httpRequest')}
+                />
+                <BehaviorActionButton
                   icon={<FolderOpen size={17} />}
                   label="打开应用"
                   onClick={() => onApplyCommonBehavior('openApp')}
@@ -537,9 +576,24 @@ export function BehaviorEditor({
                   onClick={() => onAddAdvancedBehavior('paste')}
                 />
                 <BehaviorActionButton
+                  icon={<ClipboardCopy size={17} />}
+                  label="写入剪贴板"
+                  onClick={() => onAddAdvancedBehavior('copyText')}
+                />
+                <BehaviorActionButton
                   icon={<Clock3 size={17} />}
                   label="等待"
                   onClick={() => onAddAdvancedBehavior('delay')}
+                />
+                <BehaviorActionButton
+                  icon={<Terminal size={17} />}
+                  label="执行命令"
+                  onClick={() => onAddAdvancedBehavior('runCommand')}
+                />
+                <BehaviorActionButton
+                  icon={<Send size={17} />}
+                  label="发送 HTTP 请求"
+                  onClick={() => onAddAdvancedBehavior('httpRequest')}
                 />
                 <BehaviorActionButton
                   icon={<FolderOpen size={17} />}
@@ -631,6 +685,7 @@ export type QuickOverlayProfileOption = {
   id: string
   name: string
   quick?: boolean
+  promptMode?: boolean
   configuredCount: number
 }
 
@@ -643,6 +698,8 @@ export type QuickOverlayEditorContext = {
 }
 
 type BehaviorEditDialogProps = {
+  manageFocus?: boolean
+  autoCapture?: boolean
   platform: Platform
   button: MappingInput<string>
   trigger: TriggerType
@@ -723,6 +780,7 @@ function QuickOverlayEditorFields({
   onSelectProfile: (profileId: string) => void
   onSaveBeforeEdit?: () => void
 }) {
+  const fieldId = useId()
   const candidates = useMemo(() => {
     const list = (context?.profiles ?? []).filter(item => item.id !== context?.currentProfileId)
     return [...list].sort((a, b) => Number(Boolean(b.quick)) - Number(Boolean(a.quick)))
@@ -733,12 +791,20 @@ function QuickOverlayEditorFields({
   const [creating, setCreating] = useState(() => candidates.length === 0)
   const [draftName, setDraftName] = useState('快捷交互')
   const [creatingBusy, setCreatingBusy] = useState(false)
+  const [pendingOpenAfterCreateId, setPendingOpenAfterCreateId] = useState<string | null>(null)
 
   useEffect(() => {
     if (candidates.length === 0) setCreating(true)
   }, [candidates.length])
 
-  const submitCreate = async () => {
+  useEffect(() => {
+    if (!pendingOpenAfterCreateId || profileId !== pendingOpenAfterCreateId) return
+    setPendingOpenAfterCreateId(null)
+    onSaveBeforeEdit?.()
+    context?.onEditProfile?.(pendingOpenAfterCreateId)
+  }, [context, onSaveBeforeEdit, pendingOpenAfterCreateId, profileId])
+
+  const submitCreate = async (openImmediately = false) => {
     const trimmed = draftName.trim()
     if (!trimmed || !context || creatingBusy) return
     setCreatingBusy(true)
@@ -747,6 +813,9 @@ function QuickOverlayEditorFields({
       if (createdId) {
         onSelectProfile(createdId)
         setCreating(false)
+        if (openImmediately && context.onEditProfile) {
+          setPendingOpenAfterCreateId(createdId)
+        }
       }
     } finally {
       setCreatingBusy(false)
@@ -757,8 +826,10 @@ function QuickOverlayEditorFields({
     <div className="settings-form-fields behavior-dialog-form behavior-quick-overlay-form">
       <div className="settings-form-row">
         <div className="behavior-launch-label">
-          <label htmlFor={creating ? 'behavior-quick-profile-name' : 'behavior-quick-profile-select'}>关联配置：</label>
-          <SettingsHelp id="behavior-quick-overlay-help" label="快捷交互窗">
+          <label htmlFor={`${fieldId}-${creating ? 'behavior-quick-profile-name' : 'behavior-quick-profile-select'}`}>
+            关联配置：
+          </label>
+          <SettingsHelp id={`${fieldId}-behavior-quick-overlay-help`} label="快捷交互窗">
             按下此键唤起所选的独立配置文件，并在桌面顶层显示该配置下其他按键的功能预览；按下其他按键执行对应行为并退出模式，再次按下此触发键直接退出。
           </SettingsHelp>
         </div>
@@ -767,7 +838,7 @@ function QuickOverlayEditorFields({
             <>
               <div className="manual-key-select">
                 <select
-                  id="behavior-quick-profile-select"
+                  id={`${fieldId}-behavior-quick-profile-select`}
                   value={profileId}
                   onChange={event => onSelectProfile(event.target.value)}
                 >
@@ -776,7 +847,7 @@ function QuickOverlayEditorFields({
                     <optgroup label="快捷交互配置">
                       {quickCandidates.map(item => (
                         <option key={item.id} value={item.id}>
-                          {item.name}（已配 {item.configuredCount} 键）
+                          {item.name}（{item.promptMode ? 'Prompt · ' : ''}已配 {item.configuredCount} 键）
                         </option>
                       ))}
                     </optgroup>
@@ -804,7 +875,7 @@ function QuickOverlayEditorFields({
           ) : (
             <>
               <input
-                id="behavior-quick-profile-name"
+                id={`${fieldId}-behavior-quick-profile-name`}
                 className="behavior-launch-input"
                 style={{ maxWidth: 190 }}
                 value={draftName}
@@ -820,12 +891,22 @@ function QuickOverlayEditorFields({
               />
               <button
                 type="button"
-                className="button primary"
+                className={context?.onEditProfile ? 'dialog-secondary' : 'button primary'}
                 disabled={!draftName.trim() || !context || creatingBusy}
-                onClick={() => void submitCreate()}
+                onClick={() => void submitCreate(false)}
               >
                 创建并关联
               </button>
+              {context?.onEditProfile && (
+                <button
+                  type="button"
+                  className="button primary"
+                  disabled={!draftName.trim() || creatingBusy}
+                  onClick={() => void submitCreate(true)}
+                >
+                  创建并立即配置
+                </button>
+              )}
               {candidates.length > 0 && (
                 <button type="button" className="dialog-secondary" onClick={() => setCreating(false)}>
                   选择已有
@@ -869,7 +950,37 @@ function QuickOverlayEditorFields({
   )
 }
 
+function formatHttpHeaderLines(headers?: Record<string, string>) {
+  return Object.entries(headers ?? {})
+    .map(([key, value]) => `${key}: ${value}`)
+    .join('\n')
+}
+
+function parseHttpHeaderLines(raw: string): { headers: Record<string, string> | undefined; invalid: boolean } {
+  const lines = raw
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+  if (lines.length === 0) return { headers: undefined, invalid: false }
+  const record: Record<string, string> = {}
+  for (const line of lines) {
+    const colon = line.indexOf(':')
+    if (colon <= 0) return { headers: undefined, invalid: true }
+    const key = line.slice(0, colon).trim()
+    const value = line.slice(colon + 1).trim()
+    const lower = key.toLowerCase()
+    if (!key || Object.keys(record).some(existing => existing.toLowerCase() === lower)) {
+      return { headers: undefined, invalid: true }
+    }
+    record[key] = value
+  }
+  const normalized = normalizeHttpHeaders(record)
+  return normalized === null ? { headers: undefined, invalid: true } : { headers: normalized, invalid: false }
+}
+
 export function BehaviorEditDialog({
+  manageFocus = true,
+  autoCapture = true,
   platform,
   button,
   trigger,
@@ -898,16 +1009,34 @@ export function BehaviorEditDialog({
   const [launchTarget, setLaunchTarget] = useState(
     savedBehavior.type === 'openApp' || savedBehavior.type === 'openPath'
       ? savedBehavior.path
-      : savedBehavior.type === 'openWebsite'
+      : savedBehavior.type === 'openWebsite' || savedBehavior.type === 'httpRequest'
         ? savedBehavior.url
         : '',
   )
+  const [cwdTarget, setCwdTarget] = useState(
+    savedBehavior.type === 'runCommand' ? (savedBehavior.workingDirectory ?? '') : '',
+  )
+  const [headersText, setHeadersText] = useState(() =>
+    savedBehavior.type === 'httpRequest' ? formatHttpHeaderLines(savedBehavior.headers) : '',
+  )
+  useEffect(() => {
+    setLaunchTarget(
+      savedBehavior.type === 'openApp' || savedBehavior.type === 'openPath'
+        ? savedBehavior.path
+        : savedBehavior.type === 'openWebsite' || savedBehavior.type === 'httpRequest'
+          ? savedBehavior.url
+          : '',
+    )
+    setCwdTarget(savedBehavior.type === 'runCommand' ? (savedBehavior.workingDirectory ?? '') : '')
+    setHeadersText(savedBehavior.type === 'httpRequest' ? formatHttpHeaderLines(savedBehavior.headers) : '')
+  }, [savedBehavior.id])
   const [pickerError, setPickerError] = useState('')
   const [picking, setPicking] = useState(false)
   const [applicationDragOver, setApplicationDragOver] = useState(false)
   const dialogRef = useRef<HTMLElement>(null)
+  const trapFocus = useMappingDialogFocus(dialogRef, manageFocus && !inline)
   useEffect(() => {
-    if (inline) return
+    if (inline || !autoCapture) return
     if (actionChoices || (savedBehavior.type !== 'key' && savedBehavior.type !== 'shortcut')) return
     onStartCapture()
     dialogRef.current?.querySelector<HTMLButtonElement>('.record-key-button')?.focus()
@@ -933,10 +1062,36 @@ export function BehaviorEditDialog({
       onUpdate(current =>
         current.type === 'openApp' || current.type === 'openPath'
           ? { ...current, path: target ?? '' }
-          : current.type === 'openWebsite'
+          : current.type === 'openWebsite' || current.type === 'httpRequest'
             ? { ...current, url: target ?? '' }
             : current,
       )
+  }
+  const cwdTrimmed = cwdTarget.trim()
+  const normalizedCwd = cwdTrimmed ? normalizeFilePath(cwdTrimmed) : undefined
+  const cwdInvalid = Boolean(cwdTrimmed && !normalizedCwd)
+  const updateWorkingDirectory = (value: string) => {
+    setCwdTarget(value)
+    setPickerError('')
+    const trimmed = value.trim()
+    const nextDir = trimmed ? normalizeFilePath(trimmed) : undefined
+    if (trimmed && !nextDir) return
+    onUpdate(current =>
+      current.type === 'runCommand'
+        ? { ...current, ...(nextDir ? { workingDirectory: nextDir } : { workingDirectory: undefined }) }
+        : current,
+    )
+  }
+  const parsedHeaders = parseHttpHeaderLines(headersText)
+  const updateHeadersText = (value: string) => {
+    setHeadersText(value)
+    const parsed = parseHttpHeaderLines(value)
+    if (parsed.invalid) return
+    onUpdate(current =>
+      current.type === 'httpRequest'
+        ? { ...current, ...(parsed.headers ? { headers: parsed.headers } : { headers: undefined }) }
+        : current,
+    )
   }
   const updateLaunchTargetRef = useRef(updateLaunchTarget)
   updateLaunchTargetRef.current = updateLaunchTarget
@@ -989,18 +1144,33 @@ export function BehaviorEditDialog({
     setPickerError('')
     try {
       const path = await open({
-        title: savedBehavior.type === 'openPath' ? (directory ? '选择文件夹' : '选择文件') : '选择应用',
-        directory,
+        title:
+          savedBehavior.type === 'runCommand'
+            ? '选择工作目录'
+            : savedBehavior.type === 'openPath'
+              ? directory
+                ? '选择文件夹'
+                : '选择文件'
+              : '选择应用',
+        directory: savedBehavior.type === 'runCommand' ? true : directory,
         multiple: false,
-        defaultPath: platform === 'macos' ? '/Applications' : undefined,
+        defaultPath:
+          savedBehavior.type === 'runCommand'
+            ? cwdTrimmed || undefined
+            : platform === 'macos'
+              ? '/Applications'
+              : undefined,
         filters:
-          savedBehavior.type === 'openPath'
+          savedBehavior.type === 'openPath' || savedBehavior.type === 'runCommand'
             ? undefined
             : [{ name: '应用', extensions: platform === 'macos' ? ['app'] : ['exe', 'com', 'lnk'] }],
       })
-      if (typeof path === 'string') updateLaunchTarget(path)
+      if (typeof path === 'string') {
+        if (savedBehavior.type === 'runCommand') updateWorkingDirectory(path)
+        else updateLaunchTarget(path)
+      }
     } catch (error) {
-      setPickerError(`无法选择应用：${String(error)}`)
+      setPickerError(`无法选择目标：${String(error)}`)
     } finally {
       setPicking(false)
     }
@@ -1048,18 +1218,29 @@ export function BehaviorEditDialog({
       shortcutBase,
     )
   }
+  const commandValid =
+    behavior.type === 'runCommand' ? Boolean(normalizeShellCommand(behavior.command)) && !cwdInvalid : true
+  const httpBodyValid = behavior.type === 'httpRequest' ? normalizeHttpBody(behavior.body) !== null : true
+  const httpValid =
+    behavior.type === 'httpRequest'
+      ? Boolean(normalizeHttpMethod(behavior.method) && normalizedTarget && !parsedHeaders.invalid && httpBodyValid)
+      : true
   const canSave = launchBehavior
     ? Boolean(normalizedTarget)
     : behavior.type === 'key'
       ? Boolean(behavior.key)
       : behavior.type === 'shortcut'
         ? behavior.keys.length > 0
-        : behavior.type === 'paste' || behavior.type === 'typeText'
+        : behavior.type === 'paste' || behavior.type === 'typeText' || behavior.type === 'copyText'
           ? Boolean(behavior.text.trim())
-          : behavior.type === 'quickOverlay'
-            ? Boolean(behavior.profileId.trim())
-            : true
-  return (
+          : behavior.type === 'runCommand'
+            ? commandValid
+            : behavior.type === 'httpRequest'
+              ? httpValid
+              : behavior.type === 'quickOverlay'
+                ? Boolean(behavior.profileId.trim())
+                : true
+  const content = (
     <div
       className={inline ? 'behavior-inline-container' : 'behavior-dialog-backdrop'}
       role="presentation"
@@ -1073,6 +1254,14 @@ export function BehaviorEditDialog({
         role={inline ? 'region' : 'dialog'}
         aria-modal={inline ? undefined : true}
         aria-labelledby={titleId}
+        onKeyDownCapture={event => {
+          if (!capturing) trapFocus(event)
+          if (event.key !== 'Escape') return
+          event.preventDefault()
+          event.stopPropagation()
+          if (capturing) onCancelCapture()
+          else onClose()
+        }}
         onKeyDown={event => {
           if (capturing) onCaptureKey(behavior, event)
         }}
@@ -1094,8 +1283,12 @@ export function BehaviorEditDialog({
         <div className="behavior-dialog-body">
           {actionChoices ? (
             <div className="behavior-dialog-field">
-              <span id="behavior-action-choice-label">{actionChoices.label}</span>
-              <div className="shortcut-modifiers" role="group" aria-labelledby="behavior-action-choice-label">
+              <span id={`${titleId}-behavior-action-choice-label`}>{actionChoices.label}</span>
+              <div
+                className="shortcut-modifiers"
+                role="group"
+                aria-labelledby={`${titleId}-behavior-action-choice-label`}
+              >
                 {actionChoices.options.map(option => (
                   <button
                     key={option.label}
@@ -1138,7 +1331,7 @@ export function BehaviorEditDialog({
                 <div className={`shortcut-manual-builder ${standaloneBase ? 'standalone' : ''}`}>
                   <div className="behavior-field-title">
                     <strong>修饰键</strong>
-                    <SettingsHelp id="behavior-shortcut-modifiers-help" label="修饰键">
+                    <SettingsHelp id={`${titleId}-behavior-shortcut-modifiers-help`} label="修饰键">
                       修饰键与主按键组合发送，可同时选择左右侧。主按键留空时，仅发送选中的修饰键；主按键为单独修饰键时，其他修饰键不参与。
                     </SettingsHelp>
                   </div>
@@ -1203,14 +1396,18 @@ export function BehaviorEditDialog({
           ) : behavior.type === 'wheel' ? (
             <div className="behavior-dialog-field">
               <div className="behavior-launch-label">
-                <span id="behavior-wheel-direction-label">滚动方向</span>
-                <SettingsHelp id="behavior-wheel-help" label="滚动方向">
+                <span id={`${titleId}-behavior-wheel-direction-label`}>滚动方向</span>
+                <SettingsHelp id={`${titleId}-behavior-wheel-help`} label="滚动方向">
                   {button.contextLabel
                     ? '每次触发发送一格滚轮事件。'
                     : '每次滚动一格。仅配置一个单击滚轮行为且未配置双击或长按时，按住连续滚动，松开停止。'}
                 </SettingsHelp>
               </div>
-              <div className="shortcut-modifiers" role="group" aria-labelledby="behavior-wheel-direction-label">
+              <div
+                className="shortcut-modifiers"
+                role="group"
+                aria-labelledby={`${titleId}-behavior-wheel-direction-label`}
+              >
                 {(
                   [
                     ['up', '向上'],
@@ -1238,13 +1435,17 @@ export function BehaviorEditDialog({
               <div className="settings-form-fields behavior-dialog-form">
                 <div className="settings-form-row">
                   <div className="behavior-launch-label">
-                    <span id="behavior-cursor-direction-label">移动方向</span>
-                    <SettingsHelp id="behavior-cursor-direction-help" label="移动方向">
+                    <span id={`${titleId}-behavior-cursor-direction-label`}>移动方向</span>
+                    <SettingsHelp id={`${titleId}-behavior-cursor-direction-help`} label="移动方向">
                       从当前光标位置相对移动，不会跳到固定坐标。
                     </SettingsHelp>
                   </div>
                   <div className="settings-form-control">
-                    <div className="shortcut-modifiers" role="group" aria-labelledby="behavior-cursor-direction-label">
+                    <div
+                      className="shortcut-modifiers"
+                      role="group"
+                      aria-labelledby={`${titleId}-behavior-cursor-direction-label`}
+                    >
                       {(
                         [
                           ['up', '向上'],
@@ -1273,8 +1474,8 @@ export function BehaviorEditDialog({
                 </div>
                 <div className="settings-form-row">
                   <div className="behavior-launch-label">
-                    <label htmlFor="behavior-cursor-distance">移动距离</label>
-                    <SettingsHelp id="behavior-cursor-distance-help" label="移动距离">
+                    <label htmlFor={`${titleId}-behavior-cursor-distance`}>移动距离</label>
+                    <SettingsHelp id={`${titleId}-behavior-cursor-distance-help`} label="移动距离">
                       {button.contextLabel
                         ? `每次触发移动指定像素。范围 1–${maxCursorDistance}，默认 ${defaultCursorDistance}。`
                         : `每次移动的像素数量。范围 1–${maxCursorDistance}，默认 ${defaultCursorDistance}。仅配置一个单击光标移动行为且未配置双击或长按时，按住连续移动，松开停止。`}
@@ -1282,7 +1483,7 @@ export function BehaviorEditDialog({
                   </div>
                   <div className="settings-form-control">
                     <input
-                      id="behavior-cursor-distance"
+                      id={`${titleId}-behavior-cursor-distance`}
                       className="settings-number"
                       type="number"
                       min="1"
@@ -1311,11 +1512,15 @@ export function BehaviorEditDialog({
           ) : behavior.type === 'switchProfile' ? (
             <div className="settings-form-fields behavior-dialog-form">
               <div className="settings-form-row">
-                <span className="settings-form-label" id="behavior-profile-direction-label">
+                <span className="settings-form-label" id={`${titleId}-behavior-profile-direction-label`}>
                   切换到
                 </span>
                 <div className="settings-form-control">
-                  <div className="shortcut-modifiers" role="group" aria-labelledby="behavior-profile-direction-label">
+                  <div
+                    className="shortcut-modifiers"
+                    role="group"
+                    aria-labelledby={`${titleId}-behavior-profile-direction-label`}
+                  >
                     {(
                       [
                         ['previous', '上一个'],
@@ -1370,11 +1575,11 @@ export function BehaviorEditDialog({
           ) : launchBehavior ? (
             <div className="behavior-dialog-field">
               <div className="behavior-launch-label">
-                <label htmlFor="behavior-launch-target">
+                <label htmlFor={`${titleId}-behavior-launch-target`}>
                   {behavior.type === 'openPath' ? '路径' : behavior.type === 'openApp' ? '应用路径' : '网站地址'}
                 </label>
                 <SettingsHelp
-                  id="behavior-launch-help"
+                  id={`${titleId}-behavior-launch-help`}
                   label={
                     behavior.type === 'openPath'
                       ? '文件或文件夹路径'
@@ -1392,7 +1597,7 @@ export function BehaviorEditDialog({
               </div>
               <div className="behavior-launch-row">
                 <input
-                  id="behavior-launch-target"
+                  id={`${titleId}-behavior-launch-target`}
                   className="behavior-launch-input"
                   autoFocus={draft}
                   value={launchTarget}
@@ -1409,7 +1614,7 @@ export function BehaviorEditDialog({
                   }
                   spellCheck={false}
                   aria-invalid={Boolean(launchTarget && !normalizedTarget)}
-                  aria-describedby={launchTarget && !normalizedTarget ? 'behavior-launch-error' : undefined}
+                  aria-describedby={launchTarget && !normalizedTarget ? `${titleId}-behavior-launch-error` : undefined}
                   onChange={event => updateLaunchTarget(event.target.value)}
                 />
                 {behavior.type === 'openPath' && (
@@ -1446,7 +1651,7 @@ export function BehaviorEditDialog({
                 )}
               </div>
               {launchTarget && !normalizedTarget && (
-                <p id="behavior-launch-error" className="behavior-launch-error" role="alert">
+                <p id={`${titleId}-behavior-launch-error`} className="behavior-launch-error" role="alert">
                   {behavior.type === 'openPath'
                     ? '请填写文件或文件夹的完整路径。'
                     : behavior.type === 'openApp'
@@ -1460,37 +1665,235 @@ export function BehaviorEditDialog({
                 </p>
               )}
             </div>
-          ) : behavior.type === 'paste' || behavior.type === 'typeText' ? (
-            <div className="behavior-dialog-field">
-              <div className="behavior-launch-label">
-                <label htmlFor="behavior-paste-text">文本内容</label>
-                <SettingsHelp id="behavior-text-help" label="文本输入方式">
-                  {behavior.type === 'typeText'
-                    ? '通过系统模拟输入文字，不读取或修改剪贴板；目标应用须支持系统文字输入。'
-                    : '将文本写入剪贴板，再发送粘贴快捷键；会替换当前剪贴板内容。'}
-                </SettingsHelp>
+          ) : behavior.type === 'paste' || behavior.type === 'typeText' || behavior.type === 'copyText' ? (
+            <>
+              <div className="behavior-dialog-field">
+                <label htmlFor={`${titleId}-behavior-paste-title`}>显示标题</label>
+                <input
+                  id={`${titleId}-behavior-paste-title`}
+                  className="behavior-launch-input"
+                  value={behavior.title ?? ''}
+                  maxLength={40}
+                  placeholder="可选，用于在快捷交互窗展示"
+                  onChange={event =>
+                    onUpdate(current => {
+                      if (current.type !== 'paste' && current.type !== 'typeText' && current.type !== 'copyText')
+                        return current
+                      const title = event.target.value
+                      return title ? { ...current, title } : { ...current, title: undefined }
+                    })
+                  }
+                />
               </div>
-              <textarea
-                id="behavior-paste-text"
-                className="behavior-paste-input"
-                autoFocus={draft}
-                value={behavior.text}
-                placeholder="输入要发送的文本"
-                onChange={event =>
-                  onUpdate(current =>
-                    current.type === 'paste' || current.type === 'typeText'
-                      ? { ...current, text: event.target.value }
-                      : current,
-                  )
-                }
-              />
-            </div>
+              <div className="behavior-dialog-field">
+                <div className="behavior-launch-label">
+                  <label htmlFor={`${titleId}-behavior-paste-text`}>文本内容</label>
+                  <SettingsHelp id={`${titleId}-behavior-text-help`} label="文本方式说明">
+                    {behavior.type === 'typeText'
+                      ? '通过系统模拟输入文字，不读取或修改剪贴板；目标应用须支持系统文字输入。'
+                      : behavior.type === 'copyText'
+                        ? '仅将文本写入系统剪贴板，不会发送粘贴快捷键；会覆盖当前剪贴板内容。'
+                        : '将文本写入剪贴板，再发送粘贴快捷键；会替换当前剪贴板内容。'}
+                  </SettingsHelp>
+                </div>
+                <textarea
+                  id={`${titleId}-behavior-paste-text`}
+                  className="behavior-paste-input"
+                  autoFocus={draft}
+                  value={behavior.text}
+                  placeholder={behavior.type === 'copyText' ? '输入要写入剪贴板的文本' : '输入要发送的文本'}
+                  onChange={event =>
+                    onUpdate(current =>
+                      current.type === 'paste' || current.type === 'typeText' || current.type === 'copyText'
+                        ? { ...current, text: event.target.value }
+                        : current,
+                    )
+                  }
+                />
+              </div>
+            </>
+          ) : behavior.type === 'runCommand' ? (
+            <>
+              <div className="behavior-dialog-field">
+                <label htmlFor={`${titleId}-behavior-command-title`}>显示标题</label>
+                <input
+                  id={`${titleId}-behavior-command-title`}
+                  className="behavior-launch-input"
+                  value={behavior.title ?? ''}
+                  maxLength={40}
+                  placeholder="可选，用于在快捷交互窗和列表中展示"
+                  onChange={event =>
+                    onUpdate(current => {
+                      if (current.type !== 'runCommand') return current
+                      const nextTitle = event.target.value
+                      return nextTitle ? { ...current, title: nextTitle } : { ...current, title: undefined }
+                    })
+                  }
+                />
+              </div>
+              <div className="behavior-dialog-field">
+                <div className="behavior-launch-label">
+                  <label htmlFor={`${titleId}-behavior-command-input`}>执行命令</label>
+                  <SettingsHelp id={`${titleId}-behavior-command-help`} label="执行命令说明">
+                    {platform === 'macos'
+                      ? '按下后在后台线程调用 /bin/zsh -lc 非阻塞执行，不阻塞按键响应。'
+                      : '按下后在后台线程无窗口调用 PowerShell 非阻塞执行，不弹出终端黑框。'}
+                  </SettingsHelp>
+                </div>
+                <textarea
+                  id={`${titleId}-behavior-command-input`}
+                  className="behavior-paste-input behavior-mono-input"
+                  autoFocus={draft}
+                  value={behavior.command}
+                  maxLength={4096}
+                  spellCheck={false}
+                  placeholder={
+                    platform === 'macos' ? '例如：open -a "Raycast" 或 curl -fsS ...' : '例如：Start-Process notepad'
+                  }
+                  aria-invalid={Boolean(behavior.command && !normalizeShellCommand(behavior.command))}
+                  onChange={event =>
+                    onUpdate(current =>
+                      current.type === 'runCommand' ? { ...current, command: event.target.value } : current,
+                    )
+                  }
+                />
+              </div>
+              <div className="behavior-dialog-field">
+                <label htmlFor={`${titleId}-behavior-command-cwd`}>工作目录</label>
+                <div className="behavior-launch-row">
+                  <input
+                    id={`${titleId}-behavior-command-cwd`}
+                    className="behavior-launch-input"
+                    value={cwdTarget}
+                    placeholder={platform === 'macos' ? '可选，例如 /Users/name/project' : '可选，例如 C:\\Projects'}
+                    spellCheck={false}
+                    aria-invalid={cwdInvalid}
+                    aria-describedby={cwdInvalid ? `${titleId}-behavior-command-cwd-error` : undefined}
+                    onChange={event => updateWorkingDirectory(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="reset-button"
+                    disabled={!nativeRuntime || picking}
+                    onClick={() => void chooseApplication(true)}
+                  >
+                    选择目录
+                  </button>
+                </div>
+                {cwdInvalid && (
+                  <p id={`${titleId}-behavior-command-cwd-error`} className="behavior-launch-error" role="alert">
+                    工作目录需填写有效的绝对路径，或留空使用默认目录。
+                  </p>
+                )}
+              </div>
+            </>
+          ) : behavior.type === 'httpRequest' ? (
+            <>
+              <div className="behavior-dialog-field">
+                <label htmlFor={`${titleId}-behavior-http-title`}>显示标题</label>
+                <input
+                  id={`${titleId}-behavior-http-title`}
+                  className="behavior-launch-input"
+                  value={behavior.title ?? ''}
+                  maxLength={40}
+                  placeholder="可选，例如：开灯 / 触发 Webhook"
+                  onChange={event =>
+                    onUpdate(current => {
+                      if (current.type !== 'httpRequest') return current
+                      const nextTitle = event.target.value
+                      return nextTitle ? { ...current, title: nextTitle } : { ...current, title: undefined }
+                    })
+                  }
+                />
+              </div>
+              <div className="behavior-dialog-field">
+                <div className="behavior-launch-label">
+                  <label htmlFor={`${titleId}-behavior-http-url`}>请求地址</label>
+                  <SettingsHelp id={`${titleId}-behavior-http-help`} label="HTTP 请求说明">
+                    在后台异步发送 HTTP/HTTPS 请求（10 秒超时），支持本机 Agent 服务（如 127.0.0.1）与局域网
+                    Webhook，不阻塞按键响应。
+                  </SettingsHelp>
+                </div>
+                <div className="behavior-http-row">
+                  <select
+                    aria-label="请求方法"
+                    className="manual-key-select behavior-http-method"
+                    value={behavior.method}
+                    onChange={event => {
+                      const method = normalizeHttpMethod(event.target.value)
+                      if (!method) return
+                      onUpdate(current => (current.type === 'httpRequest' ? { ...current, method } : current))
+                    }}
+                  >
+                    {httpRequestMethods.map(method => (
+                      <option key={method} value={method}>
+                        {method}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    id={`${titleId}-behavior-http-url`}
+                    className="behavior-launch-input"
+                    autoFocus={draft}
+                    value={launchTarget}
+                    placeholder="http://127.0.0.1:8123/api/webhook"
+                    spellCheck={false}
+                    aria-invalid={Boolean(launchTarget && !normalizedTarget)}
+                    aria-describedby={launchTarget && !normalizedTarget ? `${titleId}-behavior-http-error` : undefined}
+                    onChange={event => updateLaunchTarget(event.target.value)}
+                  />
+                </div>
+                {launchTarget && !normalizedTarget && (
+                  <p id={`${titleId}-behavior-http-error`} className="behavior-launch-error" role="alert">
+                    请输入有效的 HTTP 或 HTTPS 地址（不支持内嵌用户名密码）。
+                  </p>
+                )}
+              </div>
+              <div className="behavior-dialog-field">
+                <label htmlFor={`${titleId}-behavior-http-headers`}>请求头（可选）</label>
+                <textarea
+                  id={`${titleId}-behavior-http-headers`}
+                  className="behavior-paste-input behavior-mono-input behavior-compact-textarea"
+                  value={headersText}
+                  spellCheck={false}
+                  placeholder={'每行一条，格式 Name: Value\n例如 Content-Type: application/json'}
+                  aria-invalid={parsedHeaders.invalid}
+                  aria-describedby={parsedHeaders.invalid ? `${titleId}-behavior-http-headers-error` : undefined}
+                  onChange={event => updateHeadersText(event.target.value)}
+                />
+                {parsedHeaders.invalid && (
+                  <p id={`${titleId}-behavior-http-headers-error`} className="behavior-launch-error" role="alert">
+                    请求头格式应为「名称: 值」（每行一条，最多 16 条且名称不可重复）。
+                  </p>
+                )}
+              </div>
+              {(behavior.method !== 'GET' || Boolean(behavior.body)) && (
+                <div className="behavior-dialog-field">
+                  <label htmlFor={`${titleId}-behavior-http-body`}>请求体（可选）</label>
+                  <textarea
+                    id={`${titleId}-behavior-http-body`}
+                    className="behavior-paste-input behavior-mono-input behavior-compact-textarea"
+                    value={behavior.body ?? ''}
+                    maxLength={maxHttpBodyLength}
+                    spellCheck={false}
+                    placeholder='例如 {"action": "toggle"}'
+                    onChange={event =>
+                      onUpdate(current => {
+                        if (current.type !== 'httpRequest') return current
+                        const body = event.target.value
+                        return body ? { ...current, body } : { ...current, body: undefined }
+                      })
+                    }
+                  />
+                </div>
+              )}
+            </>
           ) : behavior.type === 'delay' ? (
             <div className="behavior-dialog-field">
-              <label htmlFor="behavior-delay-ms">等待时间</label>
+              <label htmlFor={`${titleId}-behavior-delay-ms`}>等待时间</label>
               <div className="behavior-delay-row">
                 <input
-                  id="behavior-delay-ms"
+                  id={`${titleId}-behavior-delay-ms`}
                   className="behavior-delay-input"
                   autoFocus={draft}
                   type="number"
@@ -1514,13 +1917,23 @@ export function BehaviorEditDialog({
           )}
           {children}
         </div>
-        {(!inline || emptyShortcut || (launchBehavior && !normalizedTarget)) && (
+        {(!inline ||
+          emptyShortcut ||
+          (launchBehavior && !normalizedTarget) ||
+          (behavior.type === 'runCommand' && !commandValid) ||
+          (behavior.type === 'httpRequest' && !httpValid)) && (
           <footer className="behavior-dialog-actions">
-            {((launchBehavior && !draft && !normalizedTarget) || emptyShortcut || !draft) && (
+            {((launchBehavior && !normalizedTarget) ||
+              emptyShortcut ||
+              (behavior.type === 'runCommand' && !commandValid) ||
+              (behavior.type === 'httpRequest' && !httpValid) ||
+              !draft) && (
               <span>
                 <Check size={13} />{' '}
-                {launchBehavior && !normalizedTarget
-                  ? '地址未完成，关闭保留原配置'
+                {(launchBehavior && !normalizedTarget) ||
+                (behavior.type === 'runCommand' && !commandValid) ||
+                (behavior.type === 'httpRequest' && !httpValid)
+                  ? '参数未完成，关闭保留原配置'
                   : emptyShortcut
                     ? '请选择至少一个按键，关闭保留原配置'
                     : '更改会自动保存'}
@@ -1550,6 +1963,7 @@ export function BehaviorEditDialog({
       </section>
     </div>
   )
+  return manageFocus && !inline ? createPortal(content, document.body) : content
 }
 
 type SequencePasteDialogProps = {
@@ -1561,6 +1975,8 @@ type SequencePasteDialogProps = {
 }
 
 export function SequencePasteDialog({ platform, button, trigger, onClose, onApply }: SequencePasteDialogProps) {
+  const dialogRef = useRef<HTMLElement>(null)
+  const trapFocus = useMappingDialogFocus(dialogRef)
   const [value, setValue] = useState('')
   const [clipboardError, setClipboardError] = useState('')
   const [sourceOpen, setSourceOpen] = useState(false)
@@ -1585,7 +2001,7 @@ export function SequencePasteDialog({ platform, button, trigger, onClose, onAppl
     }
   }, [])
 
-  return (
+  return createPortal(
     <div
       className="behavior-dialog-backdrop"
       role="presentation"
@@ -1593,13 +2009,16 @@ export function SequencePasteDialog({ platform, button, trigger, onClose, onAppl
         if (event.target === event.currentTarget) onClose()
       }}
       onKeyDown={event => {
+        trapFocus(event)
         if (event.key === 'Escape') {
+          event.preventDefault()
           event.stopPropagation()
           onClose()
         }
       }}
     >
       <section
+        ref={dialogRef}
         className="behavior-dialog sequence-paste-dialog"
         role="dialog"
         aria-modal="true"
@@ -1691,7 +2110,8 @@ export function SequencePasteDialog({ platform, button, trigger, onClose, onAppl
           </div>
         </footer>
       </section>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -1712,15 +2132,26 @@ export function TextInputPresetDialog({
   onClose,
   onSave,
 }: TextInputPresetDialogProps) {
-  return (
+  const dialogRef = useRef<HTMLElement>(null)
+  const trapFocus = useMappingDialogFocus(dialogRef)
+  return createPortal(
     <div
       className="behavior-dialog-backdrop"
       role="presentation"
+      onKeyDown={event => {
+        trapFocus(event)
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          onClose()
+        }
+      }}
       onMouseDown={event => {
         if (event.target === event.currentTarget) onClose()
       }}
     >
       <section
+        ref={dialogRef}
         className="behavior-dialog behavior-edit-form text-input-dialog"
         role="dialog"
         aria-modal="true"
@@ -1771,6 +2202,7 @@ export function TextInputPresetDialog({
           </div>
         </footer>
       </section>
-    </div>
+    </div>,
+    document.body,
   )
 }

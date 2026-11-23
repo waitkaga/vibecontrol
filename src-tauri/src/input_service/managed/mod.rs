@@ -132,6 +132,8 @@ pub struct Profile {
     pub name: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub quick: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub prompt_mode: bool,
     pub behaviors: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<ProfileDisplayConfig>,
@@ -566,9 +568,14 @@ fn normalize_instance(instance: &mut Instance) {
     let modes = crate::devices::descriptor_registry::descriptor_for_kind(&instance.kind)
         .and_then(|descriptor| descriptor.voices.first())
         .and_then(|voice| voice.attributes.get("trigger-modes"));
-    if modes.is_some_and(|modes| !modes.split_whitespace().any(|mode| mode == "click")) {
-        instance.cmiot_a15_recording_mode =
-            crate::devices::cmiot_a15::recording::RecordingMode::Hold;
+    if let Some(modes) = modes {
+        use crate::devices::cmiot_a15::recording::RecordingMode;
+        let supports = |mode| modes.split_whitespace().any(|supported| supported == mode);
+        instance.cmiot_a15_recording_mode = match (supports("hold"), supports("click")) {
+            (_, false) => RecordingMode::Hold,
+            (false, true) => RecordingMode::Click,
+            (true, true) => instance.cmiot_a15_recording_mode,
+        };
     }
 }
 fn save(path: &std::path::Path, store: &Store) -> Result<(), String> {
@@ -1587,6 +1594,7 @@ fn instance_quick_profiles(instance: &Instance) -> HashMap<String, super::QuickP
                 name: profile.name.clone(),
                 device_id: Some(instance.kind.clone()),
                 device_name: Some(instance.name.clone()),
+                prompt_mode: profile.quick && profile.prompt_mode,
                 behaviors,
                 raw_behaviors,
             },
@@ -3016,6 +3024,7 @@ mod tests {
                 id: "default".into(),
                 name: "默认".into(),
                 quick: false,
+                prompt_mode: false,
                 behaviors: serde_json::json!({}),
                 display: None,
             }],
@@ -3875,13 +3884,14 @@ mod tests {
     }
 
     #[test]
-    fn loaded_recording_modes_fix_hold_only_remotes_and_preserve_a15_choices() {
+    fn loaded_recording_modes_enforce_single_mode_and_preserve_a15_choices() {
         use crate::devices::cmiot_a15::recording::RecordingMode;
         let remotes = [
             ("xmBt29", RecordingMode::Click),
             ("rc313", RecordingMode::Click),
             ("obeRcuR5", RecordingMode::Click),
             ("tclRc802a", RecordingMode::Click),
+            ("rmfTx800c", RecordingMode::Hold),
             ("cmiotA15", RecordingMode::Click),
             ("cmiotA15", RecordingMode::Hold),
         ]
@@ -3909,6 +3919,7 @@ mod tests {
                 RecordingMode::Hold,
                 RecordingMode::Hold,
                 RecordingMode::Hold,
+                RecordingMode::Click,
                 RecordingMode::Click,
                 RecordingMode::Hold
             ]
@@ -4222,6 +4233,7 @@ mod tests {
             id: "game".into(),
             name: "游戏".into(),
             quick: false,
+            prompt_mode: false,
             behaviors: serde_json::json!({}),
             display: None,
         });
@@ -4272,6 +4284,7 @@ mod tests {
                 id: "browser".into(),
                 name: "浏览器".into(),
                 quick: false,
+                prompt_mode: false,
                 behaviors: serde_json::json!({}),
                 display: None,
             },
@@ -4279,6 +4292,7 @@ mod tests {
                 id: "editor".into(),
                 name: "编辑器".into(),
                 quick: false,
+                prompt_mode: false,
                 behaviors: serde_json::json!({}),
                 display: None,
             },
@@ -4700,6 +4714,7 @@ mod tests {
             id: "term".into(),
             name: "悬浮终端".into(),
             quick: false,
+            prompt_mode: false,
             behaviors: serde_json::json!({}),
             display: None,
         });
@@ -4860,6 +4875,7 @@ mod tests {
             id: "code".into(),
             name: "编程配置".into(),
             quick: false,
+            prompt_mode: false,
             behaviors: serde_json::json!({}),
             display: Some(ProfileDisplayConfig {
                 mode: ProfileDisplayMode::Custom,
@@ -4918,6 +4934,7 @@ mod tests {
             id: "alt".into(),
             name: "备用".into(),
             quick: false,
+            prompt_mode: false,
             behaviors: serde_json::json!({}),
             display: None,
         });
@@ -5446,6 +5463,7 @@ mod tests {
             id: "quick-ai".into(),
             name: "AI 提示词".into(),
             quick: true,
+            prompt_mode: false,
             behaviors: serde_json::json!({
                 "kivo.k18Lite.k02": { "click": [{ "type": "paste", "text": "帮我检查这段代码的边界条件" }] }
             }),
@@ -5455,6 +5473,7 @@ mod tests {
             id: "work".into(),
             name: "日常办公".into(),
             quick: false,
+            prompt_mode: false,
             behaviors: serde_json::json!({}),
             display: None,
         });

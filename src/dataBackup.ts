@@ -1,4 +1,5 @@
 import {
+  commandBehaviorMinAppVersion,
   createEmptyBehaviorMap,
   minAppVersionForBehaviors,
   normalizeBehavior,
@@ -38,6 +39,7 @@ export type BackupDocument = {
     keys: Record<string, TriggerBehaviors>
     applicationIds?: string[]
     quick?: boolean
+    promptMode?: boolean
   }[]
   savedBehaviors: { id: string; name: string; behaviors: Behavior[] }[]
   settings: BackupSettings
@@ -104,6 +106,7 @@ export function createDataBackup(
         deviceId: device.id,
         ...(profile.applicationIds ? { applicationIds: [...profile.applicationIds] } : {}),
         ...(profile.quick ? { quick: true } : {}),
+        ...(profile.quick && profile.promptMode ? { promptMode: true } : {}),
         keys: Object.fromEntries(
           device.inputIds.map(id => [device.id === 'mouse' ? id.replace(/^mouse\./, '') : id, profile.behaviors[id]]),
         ),
@@ -124,9 +127,13 @@ export function createDataBackup(
     ),
     ...document.savedBehaviors.flatMap(saved => saved.behaviors),
   ]
-  const minAppVersion = document.profiles.some(profile => profile.quick)
-    ? quickOverlayMinAppVersion
-    : minAppVersionForBehaviors(behaviors)
+  const behaviorMinVersion = minAppVersionForBehaviors(behaviors)
+  const minAppVersion =
+    behaviorMinVersion === commandBehaviorMinAppVersion
+      ? commandBehaviorMinAppVersion
+      : document.profiles.some(profile => profile.quick)
+        ? quickOverlayMinAppVersion
+        : behaviorMinVersion
   if (minAppVersion) {
     document.version = 3
     document.minAppVersion = minAppVersion
@@ -187,6 +194,7 @@ export function parseDataBackupDocument(decoded: unknown): ParsedBackup {
     }
     const applicationIds = raw.applicationIds === undefined ? undefined : parseApplicationIds(raw.applicationIds)
     const quick = raw.quick === undefined ? false : boolean(raw.quick, '快捷配置标记')
+    const promptMode = raw.promptMode === undefined ? false : boolean(raw.promptMode, '纯 Prompt 模式')
     return {
       id,
       name,
@@ -194,6 +202,7 @@ export function parseDataBackupDocument(decoded: unknown): ParsedBackup {
       deviceId: device.id,
       ...(applicationIds ? { applicationIds } : {}),
       ...(quick ? { quick: true } : {}),
+      ...(quick && promptMode ? { promptMode: true } : {}),
     }
   })
   const activeIds = record(root.activeProfileIds)

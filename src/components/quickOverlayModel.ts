@@ -20,6 +20,7 @@ export type QuickOverlaySessionPayload = {
   behaviors: Record<string, unknown> | null
   pressed: string[]
   preview: boolean
+  promptMode?: boolean
   descriptorSvg?: string | null
 }
 
@@ -29,6 +30,9 @@ export type QuickOverlayTriggerPreview = {
   showTriggerTag: boolean
   kind: 'prompt' | 'action' | 'sequence'
   badge?: string
+  title?: string
+  autoEnter?: boolean
+  inputMethod?: 'paste' | 'typeText'
   text: string
   stepsSummary?: string
 }
@@ -121,6 +125,7 @@ export type QuickOverlaySurfaceLayout =
 
 export type QuickOverlayViewModel = {
   isMouse: boolean
+  promptMode: boolean
   deviceName: string
   profileName: string
   triggerInputId: string
@@ -271,6 +276,24 @@ function compactActionText(step: Behavior, platform: Platform): string {
       return behaviorSummary(step, platform)
     }
   }
+  if (step.type === 'copyText') {
+    if (step.title) return `复制：${step.title}`
+    return step.text ? `复制：${step.text.slice(0, 14)}` : '写入剪贴板'
+  }
+  if (step.type === 'runCommand') {
+    if (step.title) return step.title
+    return step.command ? `命令：${step.command.slice(0, 18)}` : '执行命令'
+  }
+  if (step.type === 'httpRequest') {
+    if (step.title) return `${step.method} ${step.title}`
+    try {
+      const parsed = new URL(step.url)
+      const cleanPath = parsed.pathname === '/' ? '' : parsed.pathname.slice(0, 14)
+      return `${step.method} ${parsed.host}${cleanPath}`
+    } catch {
+      return behaviorSummary(step, platform)
+    }
+  }
   return behaviorSummary(step, platform)
 }
 
@@ -287,12 +310,16 @@ export function summarizeQuickTrigger(
 
   const enterPrompt = textAndEnterValue(active)
   if (enterPrompt !== null) {
+    const firstPaste = active[0]
     return {
       trigger,
       triggerLabel: label,
       showTriggerTag,
       kind: 'prompt',
       badge: '粘贴并发送',
+      ...(firstPaste.type === 'paste' && firstPaste.title ? { title: firstPaste.title } : {}),
+      autoEnter: true,
+      inputMethod: 'paste',
       text: enterPrompt || '（空文本）',
     }
   }
@@ -311,6 +338,9 @@ export function summarizeQuickTrigger(
       showTriggerTag,
       kind: 'prompt',
       badge: firstStep.type === 'paste' ? '粘贴并发送' : '输入并发送',
+      ...(firstStep.title ? { title: firstStep.title } : {}),
+      autoEnter: true,
+      inputMethod: firstStep.type,
       text: firstStep.text || '（空文本）',
     }
   }
@@ -324,6 +354,9 @@ export function summarizeQuickTrigger(
         showTriggerTag,
         kind: 'prompt',
         badge: '粘贴',
+        ...(step.title ? { title: step.title } : {}),
+        autoEnter: false,
+        inputMethod: 'paste',
         text: step.text || '（空文本）',
       }
     }
@@ -334,6 +367,9 @@ export function summarizeQuickTrigger(
         showTriggerTag,
         kind: 'prompt',
         badge: '输入',
+        ...(step.title ? { title: step.title } : {}),
+        autoEnter: false,
+        inputMethod: 'typeText',
         text: step.text || '（空文本）',
       }
     }
@@ -348,7 +384,7 @@ export function summarizeQuickTrigger(
 
   const promptStep = active.find(
     (step): step is Extract<Behavior, { type: 'paste' | 'typeText' }> =>
-      (step.type === 'paste' || step.type === 'typeText') && step.text.trim().length > 0,
+      (step.type === 'paste' || step.type === 'typeText') && (step.text.trim().length > 0 || Boolean(step.title)),
   )
   const stepsSummary = active
     .map(step => {
@@ -365,6 +401,7 @@ export function summarizeQuickTrigger(
       showTriggerTag,
       kind: 'sequence',
       badge: `${active.length} 步序列`,
+      ...(promptStep.title ? { title: promptStep.title } : {}),
       text: promptStep.text,
       stepsSummary,
     }
@@ -1296,6 +1333,7 @@ export function buildQuickOverlayView(
 
   return {
     isMouse,
+    promptMode: Boolean(session.promptMode),
     deviceName: session.deviceName || (isMouse ? '系统鼠标' : (pkg?.name ?? '设备')),
     profileName: session.profileName || '快捷交互配置',
     triggerInputId,

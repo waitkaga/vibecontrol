@@ -7,6 +7,7 @@ import React from 'react'
 import Renderer, { act } from 'react-test-renderer'
 import * as reiconReact from 'reicon-react'
 import ts from 'typescript'
+import { createFileRequire } from './helpers/resolve-compiled-require.mjs'
 import { RelayClient } from '../src/cloud/relayClient.ts'
 import {
   activateCatalogDeviceDescriptors,
@@ -208,7 +209,7 @@ test('parseDeviceModelCatalog normalizes legacy and SVG responses, deduplicates 
 })
 
 test('fetchDeviceModelCatalog requests include_svg=1 with optional auth, refresh, and anonymous 401 fallback', async () => {
-  assert.equal(deviceModelCatalogEndpoint, '/v2/device-models?app_id=axonkey&include_svg=1')
+  assert.equal(deviceModelCatalogEndpoint, '/v2/device-models?app_id=axonkey&include_svg=1&include_presets=1')
 
   // 1. Signed-in user sends bearer token (including automatic refresh when expired)
   const signedInCalls = []
@@ -237,7 +238,7 @@ test('fetchDeviceModelCatalog requests include_svg=1 with optional auth, refresh
     signedInCalls.map(c => [c.path, c.token]),
     [
       ['/auth/refresh', undefined],
-      ['/v2/device-models?app_id=axonkey&include_svg=1', 'refreshed-access'],
+      ['/v2/device-models?app_id=axonkey&include_svg=1&include_presets=1', 'refreshed-access'],
     ],
   )
 
@@ -254,7 +255,7 @@ test('fetchDeviceModelCatalog requests include_svg=1 with optional auth, refresh
   const anonItems = await fetchDeviceModelCatalog(anonymousClient)
   assert.equal(anonItems.length, 1)
   assert.deepEqual(anonymousCalls, [
-    { method: 'GET', path: '/v2/device-models?app_id=axonkey&include_svg=1', token: undefined },
+    { method: 'GET', path: '/v2/device-models?app_id=axonkey&include_svg=1&include_presets=1', token: undefined },
   ])
 
   // 3. Invalidated session (401) clears session and falls back to unauthenticated catalog request
@@ -280,8 +281,8 @@ test('fetchDeviceModelCatalog requests include_svg=1 with optional auth, refresh
   assert.equal(savedSession, null)
   assert.equal(fallbackItems[0].brand_name, 'TCL')
   assert.deepEqual(fallbackCalls, [
-    { method: 'GET', path: '/v2/device-models?app_id=axonkey&include_svg=1', token: 'access-token-1' },
-    { method: 'GET', path: '/v2/device-models?app_id=axonkey&include_svg=1', token: undefined },
+    { method: 'GET', path: '/v2/device-models?app_id=axonkey&include_svg=1&include_presets=1', token: 'access-token-1' },
+    { method: 'GET', path: '/v2/device-models?app_id=axonkey&include_svg=1&include_presets=1', token: undefined },
   ])
 })
 
@@ -412,7 +413,7 @@ test('loadDeviceModelCatalog honors cloud cache_ttl_seconds (3600s, 0s, clamped 
   }
 })
 
-test('parseRuntimeDescriptorSvg matches all 12 bundled SVGs and strictly rejects unsafe or malformed cloud SVGs without breaking built-in models', () => {
+test('parseRuntimeDescriptorSvg matches all bundled SVGs and strictly rejects unsafe or malformed cloud SVGs without breaking built-in models', () => {
   try {
     // 1. Every official bundled SVG parses with identical geometry, buttons, voice, and identities
     for (const file of readdirSync('public/device-descriptors').filter(name => name.endsWith('.svg'))) {
@@ -481,7 +482,7 @@ test('parseRuntimeDescriptorSvg matches all 12 bundled SVGs and strictly rejects
     ])
     assert.equal(packageFor('rc003').artwork, bundledRc003.artwork)
     assert.equal(packageFor('rc003').remoteView, bundledRc003.remoteView)
-    assert.equal(getSupportPackages().length, 13)
+    assert.deepEqual(getSupportPackages().map(pkg => pkg.kind), bundledSupportPackages.map(pkg => pkg.kind))
 
     // 3b. Built-in kivoK18Lite and xboxBluetooth preserve single-lane workspaceLayout & OLED screenRegion when overlaid from cloud SVG
     const kivoSvg = readFileSync('public/device-descriptors/kivo-k18-lite.svg', 'utf8')
@@ -653,6 +654,7 @@ function createUiHarness({ native = false, storage, invokeImpl } = {}) {
     },
   })
   function compile(path, imports = {}) {
+    const resolveFileRequire = createFileRequire(path, require)
     const source = ts.transpileModule(
       readFileSync(path, 'utf8').replaceAll('import.meta.url', JSON.stringify(`file://${process.cwd()}/${path}`)),
       {
@@ -708,8 +710,7 @@ function createUiHarness({ native = false, storage, invokeImpl } = {}) {
         }
         if (name === 'react-dom') return { createPortal: node => node }
         if (name === 'reicon-react') return reiconReact
-        if (name.endsWith('.css')) return {}
-        return require(name)
+        return resolveFileRequire(name)
       },
     })
     return mod.exports
@@ -722,26 +723,7 @@ function createUiHarness({ native = false, storage, invokeImpl } = {}) {
   const descriptorSvgMod = compile('src/devices/shared/descriptorSvg.ts', {
     '../generatedDescriptors.ts': require('../src/devices/generatedDescriptors.ts'),
   })
-  const xboxDefinition = compile('src/devices/xbox-controller/definition.ts', {
-    './xbox-controller.svg': { default: 'controller.svg' },
-    './inputs.ts': require('../src/devices/xbox-controller/inputs.ts'),
-  })
-  const model = compile('src/devices/integration/model.ts', {
-    '../xiaomi-remote/definition.ts': require('../src/devices/xiaomi-remote/definition.ts'),
-    '../cmiot-a15-remote/definition.ts': require('../src/devices/cmiot-a15-remote/definition.ts'),
-    '../xm-bt-29-remote/definition.ts': require('../src/devices/xm-bt-29-remote/definition.ts'),
-    '../rc-313-remote/definition.ts': require('../src/devices/rc-313-remote/definition.ts'),
-    '../obe-rcu-r5-remote/definition.ts': require('../src/devices/obe-rcu-r5-remote/definition.ts'),
-    '../tcl-rc802a-remote/definition.ts': require('../src/devices/tcl-rc802a-remote/definition.ts'),
-    '../tcl-rc902n-remote/definition.ts': require('../src/devices/tcl-rc902n-remote/definition.ts'),
-    '../tcl-rc902v-remote/definition.ts': require('../src/devices/tcl-rc902v-remote/definition.ts'),
-    '../hisense-rcf3b65-remote/definition.ts': require('../src/devices/hisense-rcf3b65-remote/definition.ts'),
-    '../phicomm-db1-r-remote/definition.ts': require('../src/devices/phicomm-db1-r-remote/definition.ts'),
-    '../kivo-k18-lite/definition.ts': require('../src/devices/kivo-k18-lite/definition.ts'),
-    '../g17-touch/definition.ts': require('../src/devices/g17-touch/definition.ts'),
-    '../xbox-controller/index.ts': xboxDefinition,
-    '../../appStorage.ts': require('../src/appStorage.ts'),
-  })
+  const model = compile('src/devices/integration/model.ts')
   const catalogMod = compile('src/cloud/deviceModelCatalog.ts', {
     '../devices/bundledModelCatalog.json': JSON.parse(readFileSync('src/devices/bundledModelCatalog.json', 'utf8')),
     '../devices/integration/model.ts': model,
@@ -971,7 +953,7 @@ test('IntegrationDialog Scheme A hydrates offline bundled catalog, upgrades to c
       await flush()
     })
     assert.deepEqual(catalogRequests, [
-      { method: 'GET', path: '/v2/device-models?app_id=axonkey&include_svg=1', token: 'access-token-1' },
+      { method: 'GET', path: '/v2/device-models?app_id=axonkey&include_svg=1&include_presets=1', token: 'access-token-1' },
     ])
 
     // 3. Resolve cloud catalog including a brand-new cloud model customRemoteX with axonkey.device/1 SVG
@@ -1096,7 +1078,15 @@ test('IntegrationDialog Scheme A hydrates offline bundled catalog, upgrades to c
       view.root
         .findByProps({ className: 'managed-catalog-list-pane' })
         .findAll(node => node.type === 'button' && node.props.className === 'managed-package')
-    assert.equal(packageCards().length, 14, '13 bundled + 1 dynamic cloud model')
+    assert.deepEqual(
+      Array.from(h.model.bundledSupportPackages, pkg => pkg.kind),
+      bundledSupportPackages.map(pkg => pkg.kind),
+    )
+    assert.deepEqual(
+      packageCards().map(card => card.props['data-kind']).sort(),
+      [...h.model.bundledSupportPackages.map(pkg => pkg.kind), 'customRemoteX'].sort(),
+      'retains every bundled model and adds the dynamic cloud model',
+    )
 
     act(() => {
       brandGroup
@@ -1529,4 +1519,40 @@ test('local custom-devices overriding cloud SVG emits warn logs and displays act
     h.catalogMod.clearDeviceModelCatalogCache(storage)
     h.useCatalogMod.resetNativeDescriptorSyncCache()
   }
+})
+
+test('parseDeviceModelCatalog and cache round-trip preserve valid model presets', () => {
+  const storage = createStorage()
+  const items = parseDeviceModelCatalog({
+    items: [
+      {
+        id: 'm1',
+        code: 'rc003',
+        name: '小米遥控器',
+        model: 'RC003',
+        presets: [
+          {
+            id: 'p1',
+            model_id: 'm1',
+            slug: 'mouse-control',
+            name: '飞鼠操控',
+            description: '默认',
+            platform: 'all',
+            is_default: true,
+            quick: false,
+            prompt_mode: false,
+            sort_order: 10,
+            behaviors: { confirm: { click: [{ id: 'a1', enabled: true, type: 'mouse', button: 'left' }], doubleClick: [], longPress: [] } },
+          },
+          { id: 'bad', slug: '', name: '' },
+        ],
+      },
+    ],
+  })
+  assert.equal(items.length, 1)
+  assert.equal(items[0].presets?.length, 1)
+  assert.equal(items[0].presets?.[0].slug, 'mouse-control')
+  writeCachedDeviceModelCatalog(items, storage, 1_700_000_000_000, 3600)
+  const cached = readCachedDeviceModelCatalog(storage, 1_700_000_100_000)
+  assert.equal(cached?.items[0].presets?.[0].slug, 'mouse-control')
 })

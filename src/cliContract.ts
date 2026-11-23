@@ -1,11 +1,16 @@
 import {
   normalizeApplicationPath,
   normalizeBehavior,
+  normalizeBehaviorTitle,
   normalizeFilePath,
+  normalizeHttpBody,
+  normalizeHttpHeaders,
+  normalizeHttpMethod,
   normalizeProfileReferenceId,
+  normalizeShellCommand,
   normalizeWebsiteUrl,
 } from './behaviorModel.ts'
-import type { Behavior } from './behaviorModel.ts'
+import type { Behavior, HttpRequestMethod } from './behaviorModel.ts'
 import type { DeviceId, InputId } from './devices/index.ts'
 import type { TriggerType } from './behaviorModel.ts'
 
@@ -29,10 +34,13 @@ export const cliBehaviorTypes = [
   'cursorMove',
   'paste',
   'typeText',
+  'copyText',
   'delay',
   'openApp',
   'openPath',
   'openWebsite',
+  'runCommand',
+  'httpRequest',
   'switchProfile',
   'quickOverlay',
   'disabled',
@@ -48,12 +56,22 @@ export type CliBehavior =
   | (CliBehaviorBase & { type: 'wheel'; direction: 'up' | 'down' | 'left' | 'right' })
   | (CliBehaviorBase & { type: 'mouse'; button: 'left' | 'right' | 'back' | 'forward' })
   | (CliBehaviorBase & { type: 'cursorMove'; direction: 'up' | 'down' | 'left' | 'right'; distance: number })
-  | (CliBehaviorBase & { type: 'paste'; text: string })
-  | (CliBehaviorBase & { type: 'typeText'; text: string })
+  | (CliBehaviorBase & { type: 'paste'; text: string; title?: string })
+  | (CliBehaviorBase & { type: 'typeText'; text: string; title?: string })
+  | (CliBehaviorBase & { type: 'copyText'; text: string; title?: string })
   | (CliBehaviorBase & { type: 'delay'; ms: number })
   | (CliBehaviorBase & { type: 'openApp'; path: string })
   | (CliBehaviorBase & { type: 'openPath'; path: string })
   | (CliBehaviorBase & { type: 'openWebsite'; url: string })
+  | (CliBehaviorBase & { type: 'runCommand'; command: string; workingDirectory?: string; title?: string })
+  | (CliBehaviorBase & {
+      type: 'httpRequest'
+      method: HttpRequestMethod
+      url: string
+      headers?: Record<string, string>
+      body?: string
+      title?: string
+    })
   | (CliBehaviorBase & { type: 'switchProfile'; direction: 'previous' | 'next'; wrap: boolean })
   | (CliBehaviorBase & { type: 'quickOverlay'; profileId: string })
   | (CliBehaviorBase & { type: 'disabled' })
@@ -67,10 +85,13 @@ export type CliBehaviorInput =
   | (Omit<Extract<CliBehavior, { type: 'cursorMove' }>, 'enabled'> & { enabled?: boolean })
   | (Omit<Extract<CliBehavior, { type: 'paste' }>, 'enabled'> & { enabled?: boolean })
   | (Omit<Extract<CliBehavior, { type: 'typeText' }>, 'enabled'> & { enabled?: boolean })
+  | (Omit<Extract<CliBehavior, { type: 'copyText' }>, 'enabled'> & { enabled?: boolean })
   | (Omit<Extract<CliBehavior, { type: 'delay' }>, 'enabled'> & { enabled?: boolean })
   | (Omit<Extract<CliBehavior, { type: 'openApp' }>, 'enabled'> & { enabled?: boolean })
   | (Omit<Extract<CliBehavior, { type: 'openPath' }>, 'enabled'> & { enabled?: boolean })
   | (Omit<Extract<CliBehavior, { type: 'openWebsite' }>, 'enabled'> & { enabled?: boolean })
+  | (Omit<Extract<CliBehavior, { type: 'runCommand' }>, 'enabled'> & { enabled?: boolean })
+  | (Omit<Extract<CliBehavior, { type: 'httpRequest' }>, 'enabled'> & { enabled?: boolean })
   | (Omit<Extract<CliBehavior, { type: 'switchProfile' }>, 'enabled'> & { enabled?: boolean })
   | (Omit<Extract<CliBehavior, { type: 'quickOverlay' }>, 'enabled'> & { enabled?: boolean })
   | (Omit<Extract<CliBehavior, { type: 'disabled' }>, 'enabled'> & { enabled?: boolean })
@@ -313,9 +334,18 @@ export function normalizeCliBehavior(value: unknown, platform: CliPlatform): Cli
         : null
     }
     case 'paste':
-      return typeof value.text === 'string' ? { type: 'paste', text: value.text, enabled: isEnabled } : null
     case 'typeText':
-      return typeof value.text === 'string' ? { type: 'typeText', text: value.text, enabled: isEnabled } : null
+    case 'copyText': {
+      if (typeof value.text !== 'string') return null
+      if (value.title !== undefined && typeof value.title !== 'string') return null
+      const title = normalizeBehaviorTitle(value.title)
+      return {
+        type: value.type as 'paste' | 'typeText' | 'copyText',
+        text: value.text,
+        ...(title ? { title } : {}),
+        enabled: isEnabled,
+      }
+    }
     case 'delay': {
       const ms = typeof value.ms === 'number' ? Math.round(value.ms) : Number(value.ms)
       return Number.isInteger(ms) && ms >= 0 && ms <= 300_000 ? { type: 'delay', ms, enabled: isEnabled } : null
@@ -331,6 +361,41 @@ export function normalizeCliBehavior(value: unknown, platform: CliPlatform): Cli
     case 'openWebsite': {
       const url = normalizeWebsiteUrl(value.url)
       return url ? { type: 'openWebsite', url, enabled: isEnabled } : null
+    }
+    case 'runCommand': {
+      const command = normalizeShellCommand(value.command)
+      if (!command) return null
+      if (value.workingDirectory !== undefined && typeof value.workingDirectory !== 'string') return null
+      const hasWorkingDir = typeof value.workingDirectory === 'string' && value.workingDirectory.trim().length > 0
+      const workingDirectory = hasWorkingDir ? normalizeFilePath(value.workingDirectory) : undefined
+      if (hasWorkingDir && !workingDirectory) return null
+      if (value.title !== undefined && typeof value.title !== 'string') return null
+      const title = normalizeBehaviorTitle(value.title)
+      return {
+        type: 'runCommand',
+        command,
+        ...(workingDirectory ? { workingDirectory } : {}),
+        ...(title ? { title } : {}),
+        enabled: isEnabled,
+      }
+    }
+    case 'httpRequest': {
+      const method = normalizeHttpMethod(value.method)
+      const url = normalizeWebsiteUrl(value.url)
+      const headers = normalizeHttpHeaders(value.headers)
+      const body = normalizeHttpBody(value.body)
+      if (!method || !url || headers === null || body === null) return null
+      if (value.title !== undefined && typeof value.title !== 'string') return null
+      const title = normalizeBehaviorTitle(value.title)
+      return {
+        type: 'httpRequest',
+        method,
+        url,
+        ...(headers ? { headers } : {}),
+        ...(body ? { body } : {}),
+        ...(title ? { title } : {}),
+        enabled: isEnabled,
+      }
     }
     case 'switchProfile':
       return (value.direction === 'previous' || value.direction === 'next') &&
@@ -375,9 +440,11 @@ export function behaviorToCliBehavior(value: Behavior, platform: CliPlatform): C
     case 'cursorMove':
       return { ...base, type: 'cursorMove', direction: value.direction, distance: value.distance }
     case 'paste':
-      return { ...base, type: 'paste', text: value.text }
+      return { ...base, type: 'paste', text: value.text, ...(value.title ? { title: value.title } : {}) }
     case 'typeText':
-      return { ...base, type: 'typeText', text: value.text }
+      return { ...base, type: 'typeText', text: value.text, ...(value.title ? { title: value.title } : {}) }
+    case 'copyText':
+      return { ...base, type: 'copyText', text: value.text, ...(value.title ? { title: value.title } : {}) }
     case 'delay':
       return { ...base, type: 'delay', ms: value.ms }
     case 'openApp':
@@ -386,6 +453,24 @@ export function behaviorToCliBehavior(value: Behavior, platform: CliPlatform): C
       return { ...base, type: 'openPath', path: value.path }
     case 'openWebsite':
       return { ...base, type: 'openWebsite', url: value.url }
+    case 'runCommand':
+      return {
+        ...base,
+        type: 'runCommand',
+        command: value.command,
+        ...(value.workingDirectory ? { workingDirectory: value.workingDirectory } : {}),
+        ...(value.title ? { title: value.title } : {}),
+      }
+    case 'httpRequest':
+      return {
+        ...base,
+        type: 'httpRequest',
+        method: value.method,
+        url: value.url,
+        ...(value.headers ? { headers: { ...value.headers } } : {}),
+        ...(value.body ? { body: value.body } : {}),
+        ...(value.title ? { title: value.title } : {}),
+      }
     case 'switchProfile':
       return { ...base, type: 'switchProfile', direction: value.direction, wrap: value.wrap }
     case 'quickOverlay':

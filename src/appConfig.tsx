@@ -4,7 +4,15 @@ import type { BehaviorMap, BehaviorType, ButtonId, InputId, TriggerType } from '
 import { inputIds } from './devices/index.ts'
 import type { DeviceId } from './devices/index.ts'
 import { createDefaultDeviceProfiles, extractDeviceBehaviors, parseStoredDeviceProfiles } from './deviceProfiles'
-import type { AppPage, MappingProfile, Platform, RemoteButton, StoredProfiles, StoredSettings } from './appTypes'
+import type {
+  AppPage,
+  MappingEditorStyle,
+  MappingProfile,
+  Platform,
+  RemoteButton,
+  StoredProfiles,
+  StoredSettings,
+} from './appTypes'
 import type { KeyboardEvent } from 'react'
 import { xiaomiRemoteButtons, cmiotA15RemoteButtons } from './devices/index.ts'
 
@@ -51,6 +59,7 @@ export const audioGainMax = 30
 export const defaultAudioGain = 0
 
 export type StoredUiState = {
+  mappingStyle: MappingEditorStyle
   sidebarCollapsed: boolean
   activePage: AppPage
   selectedDeviceId: DeviceId
@@ -81,6 +90,7 @@ function isKnownInput(value: unknown): value is InputId {
 }
 
 const defaultUiState: StoredUiState = {
+  mappingStyle: 'flow',
   sidebarCollapsed: false,
   activePage: 'home',
   selectedDeviceId: 'rc003',
@@ -116,6 +126,7 @@ export function getStoredUiState(): StoredUiState {
       : {}
 
     return {
+      mappingStyle: parsed.mappingStyle === 'legacy' ? 'legacy' : 'flow',
       sidebarCollapsed:
         typeof parsed.sidebarCollapsed === 'boolean' ? parsed.sidebarCollapsed : fallback.sidebarCollapsed,
       activePage:
@@ -247,6 +258,7 @@ export function createMappingProfile(
   behaviors: BehaviorMap,
   deviceId: DeviceId,
   quick = false,
+  promptMode = false,
 ): MappingProfile {
   return {
     id: createProfileId(),
@@ -254,6 +266,7 @@ export function createMappingProfile(
     deviceId,
     behaviors: extractDeviceBehaviors(behaviors, deviceId),
     ...(quick ? { quick: true } : {}),
+    ...(quick && promptMode ? { promptMode: true } : {}),
   }
 }
 
@@ -291,10 +304,13 @@ export const behaviorTypeLabels: Record<BehaviorType, string> = {
   shortcut: '按键 / 组合键',
   paste: '粘贴文本',
   typeText: '模拟输入文字',
+  copyText: '写入剪贴板',
   openPath: '打开文件或文件夹',
   delay: '等待',
   openApp: '打开应用',
   openWebsite: '打开网站',
+  runCommand: '执行命令',
+  httpRequest: '发送 HTTP 请求',
   switchProfile: '切换配置文件',
   quickOverlay: '快捷交互窗',
   disabled: '禁用按键',

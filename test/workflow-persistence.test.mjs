@@ -11,6 +11,7 @@ import Renderer, { act } from 'react-test-renderer'
 const require = createRequire(import.meta.url)
 const library = require('sequential-workflow-designer')
 const instances = []
+const canvasObservers = new Map()
 const storage = new Map()
 let storageFailure = false
 const copiedSequences = []
@@ -75,6 +76,7 @@ function load(file) {
     } }
     if (name === '../appConfig') return { triggerLabels: { click: '单击', doubleClick: '双击', longPress: '长按' }, behaviorSummary: behavior => `${behavior.type}:${behavior.ms ?? behavior.text ?? behavior.key ?? ''}`, keyDisplayName: key => key, rightModifierChoices: () => [] }
     if (name === './workflowActionIcons') return { createWorkflowActionIconUrls: () => ({}) }
+    if (name === './MappingColumnSplitter') return { MappingColumnSplitter: () => null }
     if (name === './WorkflowSplitPane') return { WorkflowSplitPane: props => React.createElement(React.Fragment, null, props.header, props.canvas, props.editor) }
     if (name === '../clipboard') return { writeClipboardText: async text => { copiedSequences.push(text) } }
     if (name === './BehaviorEditor') return { SequencePasteDialog: MockPasteDialog }
@@ -96,7 +98,7 @@ function load(file) {
       setItem: (key, value) => { if (storageFailure) throw new Error('Storage full'); storage.set(key, value) },
     } },
     document: { body: {}, createElement: () => ({ setAttribute() {}, remove() {} }) },
-    ResizeObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { constructor(callback) { this.callback = callback; this.targets = [] } observe(target) { this.targets.push(target); canvasObservers.set(target, this.callback) } disconnect() { for (const target of this.targets) canvasObservers.delete(target) } },
   }, { filename: file })
   return module.exports
 }
@@ -125,10 +127,11 @@ const render = async (sequences = empty(), options = {}, account = null) => {
       return list
     }
     const handlers = new Map()
-    return { handlers, focus() {}, querySelector: () => null, querySelectorAll: () => [], addEventListener: (name, callback) => handlers.set(name, callback), removeEventListener: name => handlers.delete(name), setAttribute() {}, classList: { toggle() {} } }
+    return { clientWidth: 800, handlers, focus() {}, querySelector: () => null, querySelectorAll: () => [], addEventListener: (name, callback) => handlers.set(name, callback), removeEventListener: name => handlers.delete(name), setAttribute() {}, classList: { toggle() {} } }
   } }) })
   return {
     view, writes, requests, toolboxLists, current: () => instances.at(-1),
+    resize: async width => { const canvas = instances.at(-1).canvas; canvas.clientWidth = width; await act(async () => canvasObservers.get(canvas)()) },
     update: async update => { props = { ...props, ...update }; await act(async () => view.update(element())) },
     unmount: async () => act(async () => view.unmount()),
   }
@@ -218,6 +221,42 @@ test('single-lane trigger switching keeps the designer and preserves hidden sequ
     await app.update({ sequences: cleared, activeTrigger: 'click' })
     assert.equal(app.current(), original)
     assert.deepEqual(copy(root.visibleTriggers().map(trigger => trigger.id)), ['click'])
+  } finally { await app.unmount() }
+})
+
+test('canvas width switches between columns and trigger tabs without losing the edited step or hidden sequences', async () => {
+  const initial = { click: [{ ...delay(100), id: 'click-wait' }], doubleClick: [{ ...delay(200), id: 'double-wait' }], longPress: [{ ...delay(300), id: 'long-wait' }] }
+  const app = await render(initial)
+  const original = app.current()
+  const root = original.configuration.extensions.find(extension => extension.rootComponent).rootComponent
+  const visible = () => copy(root.visibleTriggers().map(trigger => trigger.id))
+  try {
+    assert.deepEqual(visible(), ['click', 'doubleClick', 'longPress'])
+    const editing = await openContextEditor(app, 'longPress')
+    await app.resize(420)
+    assert.deepEqual(visible(), ['longPress'], 'narrowing follows the currently edited trigger')
+    assert.equal(app.view.root.findByType('workflow-dialog'), editing)
+    assert.equal(app.writes.length, 0)
+    const doubleTab = app.view.root.findAllByProps({ role: 'tab' })[1]
+    await act(async () => doubleTab.props.onClick())
+    assert.deepEqual(visible(), ['doubleClick'])
+    const node = palette('enter')
+    branches(original).doubleClick.push(node)
+    await act(async () => original.emit(library.DefinitionChangeType.stepInserted, node.id))
+    const saved = app.writes.at(-1)[1]
+    assert.deepEqual(saved.click, initial.click)
+    assert.deepEqual(saved.longPress, initial.longPress)
+    assert.equal(saved.doubleClick.at(-1).key, 'Enter')
+    await app.update({ sequences: saved })
+    const writesBeforeResize = app.writes.length
+    await app.resize(900)
+    assert.deepEqual(visible(), ['click', 'doubleClick', 'longPress'])
+    assert.equal(app.view.root.findAllByProps({ role: 'tab' }).length, 0)
+    await app.resize(420)
+    assert.deepEqual(visible(), ['doubleClick'])
+    assert.equal(app.current(), original)
+    assert.equal(original.destroyed, false)
+    assert.equal(app.writes.length, writesBeforeResize)
   } finally { await app.unmount() }
 })
 
@@ -494,7 +533,7 @@ test('switching inputs flushes a pending designer event into the outgoing input 
 })
 
 test('switching inputs keeps the library search and list scroll while routing actions to the new input', async () => {
-  const app = await render(empty(), { toolboxCategory: '常用行为/常用行为' })
+  const app = await render(empty(), { toolboxCategory: '内置/键盘' })
   try {
     const previous = app.current()
     const input = app.view.root.findByType('input')
@@ -508,7 +547,7 @@ test('switching inputs keeps the library search and list scroll while routing ac
     assert.equal(input.props.value, '回车')
     assert.equal(app.toolboxLists.length, 1)
     assert.equal(list.scrollTop, 200)
-    assert.equal(app.view.root.findByType(WorkflowToolbox).props.selectedCategory, '常用行为/常用行为')
+    assert.equal(app.view.root.findByType(WorkflowToolbox).props.selectedCategory, '内置/键盘')
 
     const enter = app.view.root.findByProps({ className: 'sqd-toolbox-item sqd-type-enter' })
     await act(async () => enter.findByProps({ className: 'workflow-toolbox-item-main' }).props.onMouseDown({
@@ -516,7 +555,7 @@ test('switching inputs keeps the library search and list scroll while routing ac
     }))
     assert.equal(previous.drags.length, 0)
     assert.equal(app.current().drags[0].step.type, 'enter')
-    await act(async () => enter.findByProps({ className: 'workflow-toolbox-add' }).props.onClick())
+    await act(async () => enter.findByProps({ className: 'workflow-toolbox-item-main' }).props.onClick({ detail: 1, clientX: 120, clientY: 80 }))
     assert.equal(app.writes.length, 1)
     assert.equal(app.writes[0][0], 'power')
     assert.equal(app.writes[0][1].click[0].key, 'Enter')
@@ -617,7 +656,7 @@ test('the disable action is offered in the control palette and replaces only its
   const app = await render(original)
   try {
     const toolbox = app.view.root.findByType(WorkflowToolbox)
-    const action = toolbox.props.palettes.flatMap(palette => palette.groups).find(group => group.name === '控制').steps.find(step => step.type === 'disabled')
+    const action = toolbox.props.palettes.flatMap(palette => palette.groups).find(group => group.name === '流程控制').steps.find(step => step.type === 'disabled')
     assert.equal(action.name, '禁用此触发方式')
     const node = { ...action, id: 'disable-drop', properties: { ...action.properties } }
     const instance = app.current()
@@ -810,6 +849,24 @@ test('library add buttons append independent actions to the current trigger and 
     await act(async () => toolbox.props.onAddStep(action))
     assert.equal(app.writes.at(-1)[1].longPress.length, 1)
     assert.equal(app.writes.at(-1)[1].doubleClick.length, 2)
+  } finally { await app.unmount() }
+})
+
+test('keyboard additions can target double click on wide canvases and open a modal editor', async () => {
+  const app = await render()
+  try {
+    await act(async () => app.view.root.findByType('select').props.onChange({ target: { value: 'doubleClick' } }))
+    const toolbox = app.view.root.findByType(WorkflowToolbox)
+    assert.equal(toolbox.props.addLabel, '添加到双击')
+    const action = toolbox.props.palettes.flatMap(palette => palette.groups).flatMap(group => group.steps).find(step => step.type === 'paste')
+    await act(async () => toolbox.props.onAddStep(action, true))
+    const modal = app.view.root.findAllByType('workflow-dialog').find(dialog => !dialog.props.inline)
+    assert.ok(modal)
+    assert.equal(modal.props.edit.trigger, 'doubleClick')
+    assert.equal(app.writes.length, 0, 'incomplete drafts do not overwrite stored mappings')
+    await act(async () => modal.props.edit.onSave({ ...modal.props.edit.behavior, text: '键盘操作' }))
+    assert.equal(app.writes.at(-1)[1].doubleClick[0].text, '键盘操作')
+    assert.equal(app.writes.at(-1)[1].click.length, 0)
   } finally { await app.unmount() }
 })
 

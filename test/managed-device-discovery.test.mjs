@@ -8,10 +8,12 @@ import React from 'react'
 import Renderer, { act } from 'react-test-renderer'
 import * as reiconReact from 'reicon-react'
 import { parseDescriptorSvg } from '../scripts/generate-device-descriptors.mjs'
+import { createFileRequire } from './helpers/resolve-compiled-require.mjs'
 
 const require = createRequire(import.meta.url)
 const text = node => typeof node === 'string' ? node : (Array.isArray(node) ? node : node?.children ?? []).map(text).join('')
 function compile(path, imports = {}, globals = {}) {
+  const resolveFileRequire = createFileRequire(path, require)
   const source = ts.transpileModule(readFileSync(path, 'utf8').replaceAll('import.meta.url', JSON.stringify(`file://${process.cwd()}/${path}`)), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },
   }).outputText
@@ -22,31 +24,11 @@ function compile(path, imports = {}, globals = {}) {
     setInterval: (...args) => globalThis.setInterval(...args), clearInterval: (...args) => globalThis.clearInterval(...args),
     document: { getElementById: () => null, activeElement: null, body: {} }, HTMLElement: class {},
     ...globals,
-    require: name => imports[name] ?? (name === 'reicon-react' ? reiconReact : name.endsWith('.css') ? {} : require(name)),
+    require: name => (name in imports ? imports[name] : name === 'reicon-react' ? reiconReact : resolveFileRequire(name)),
   })
   return module.exports
 }
-const xboxDefinition = compile('src/devices/xbox-controller/definition.ts', {
-  './xbox-controller.svg': { default: 'controller.svg' },
-  './inputs.ts': require('../src/devices/xbox-controller/inputs.ts'),
-})
-const modelImports = {
-  '../../appStorage.ts': require('../src/appStorage.ts'),
-  '../xiaomi-remote/definition.ts': require('../src/devices/xiaomi-remote/definition.ts'),
-  '../cmiot-a15-remote/definition.ts': require('../src/devices/cmiot-a15-remote/definition.ts'),
-  '../xm-bt-29-remote/definition.ts': require('../src/devices/xm-bt-29-remote/definition.ts'),
-  '../rc-313-remote/definition.ts': require('../src/devices/rc-313-remote/definition.ts'),
-  '../obe-rcu-r5-remote/definition.ts': require('../src/devices/obe-rcu-r5-remote/definition.ts'),
-  '../tcl-rc802a-remote/definition.ts': require('../src/devices/tcl-rc802a-remote/definition.ts'),
-  '../tcl-rc902n-remote/definition.ts': require('../src/devices/tcl-rc902n-remote/definition.ts'),
-  '../tcl-rc902v-remote/definition.ts': require('../src/devices/tcl-rc902v-remote/definition.ts'),
-  '../hisense-rcf3b65-remote/definition.ts': require('../src/devices/hisense-rcf3b65-remote/definition.ts'),
-  '../phicomm-db1-r-remote/definition.ts': require('../src/devices/phicomm-db1-r-remote/definition.ts'),
-  '../kivo-k18-lite/definition.ts': require('../src/devices/kivo-k18-lite/definition.ts'),
-  '../g17-touch/definition.ts': require('../src/devices/g17-touch/definition.ts'),
-  '../xbox-controller/index.ts': xboxDefinition,
-}
-const model = compile('src/devices/integration/model.ts', modelImports)
+const model = compile('src/devices/integration/model.ts')
 const controls = compile('src/devices/integration/IntegrationControls.tsx')
 const battery = compile('src/components/BatteryIndicator.tsx')
 const behaviorLibraryContext = compile('src/cloud/BehaviorLibraryContext.tsx')
@@ -420,7 +402,7 @@ test('integration saves devices without an input mode on every platform', async 
       controller, native: false, platform, permissions: {},
     })) })
     act(() => view.root.find(node => node.type === 'button' && node.props.className === 'my-devices-card').props.onClick())
-    const dialog = view.root.findByProps({ role: 'dialog' })
+    const dialog = view.root.findByType('dialog')
     assert.ok(!text(dialog).includes('输入模式'))
     if (kind === 'cmiotA15' && platform === 'windows') {
       assert.ok(!text(dialog).includes('暂不支持输入监听'))
@@ -430,6 +412,15 @@ test('integration saves devices without an input mode on every platform', async 
     assert.equal(dialog.findAllByType('input').filter(input => input.props.type === 'radio').length, 0)
     await act(async () => view.root.findByProps({ className: 'managed-primary' }).props.onClick())
     assert.ok(!('capture' in submitted))
+    assert.equal(submitted.profiles.length, 1)
+    assert.equal(submitted.activeProfileId, submitted.profiles[0].id)
+    assert.ok(Object.keys(submitted.profiles[0].behaviors).length > 0, `${kind} integrates with default preset`)
+
+    // Explicitly switching initial preset to "blank" preserves blank default profile
+    act(() => view.root.find(node => node.type === 'button' && node.props.className === 'my-devices-card').props.onClick())
+    const presetSelect = view.root.findByProps({ id: 'integration-preset-select' })
+    act(() => presetSelect.props.onChange({ target: { value: 'blank' } }))
+    await act(async () => view.root.findByProps({ className: 'managed-primary' }).props.onClick())
     assert.equal(submitted.activeProfileId, 'default')
     assert.deepEqual(structuredClone(submitted.profiles), [{ id: 'default', name: '默认配置', behaviors: {} }])
     act(() => view.unmount())
@@ -455,8 +446,8 @@ test('bundled capabilities retain recording defaults and platform support for al
   for (const [kind, mode, hidVoice, windowsDriver = true, singleLane = false] of [
     ['rc003', 'click', false], ['cmiotA15', 'click', true], ['xmBt29', 'hold', true],
     ['rc313', 'hold', true], ['obeRcuR5', 'hold', true], ['xboxBluetooth', 'click', false, true, true],
-    ['tclRc802a', 'hold', true], ['tclRc902n', 'click', false], ['tclRc902v', 'click', false],
-    ['hisenseRcf3b65', 'click', false], ['phicommDb1R', 'click', false],
+    ['tclRc802a', 'hold', true], ['tclRc902n', 'hold', false], ['tclRc902v', 'hold', false],
+    ['hisenseRcf3b65', 'click', false], ['phicommDb1R', 'click', false], ['oneplusRc001a', 'click', false],
     ['kivoK18Lite', 'click', false, false, true],
     ['g17Touch', 'click', false, false, true],
   ]) {
@@ -492,9 +483,8 @@ test('recording defaults and driver support follow changed SVG declarations for 
   const descriptor = parseDescriptorSvg(source
     .replace('trigger-modes="hold click"', 'trigger-modes="hold"')
     .replaceAll('windows-prefix="BTHLEDEVICE"', ''), '/test.svg')
-  const definition = modelImports['../cmiot-a15-remote/definition.ts']
+  const definition = require('../src/devices/cmiot-a15-remote/definition.ts')
   const variant = compile('src/devices/integration/model.ts', {
-    ...modelImports,
     '../cmiot-a15-remote/definition.ts': { ...definition,
       cmiotA15SupportPackage: { ...definition.cmiotA15SupportPackage,
         remoteView: { ...definition.cmiotA15SupportPackage.remoteView, voice: descriptor.voice, identities: descriptor.identities },
@@ -509,9 +499,8 @@ test('mobile model recognizes any software marker declared in the SVG identity',
   const source = readFileSync('public/device-descriptors/cmiot-a15.svg', 'utf8')
   const descriptor = parseDescriptorSvg(source.replaceAll('CMIOT3_B311', 'unused|CMIOT3_B311|alternate')
     .replace('software-contains="unused|CMIOT3_B311|alternate"', ''), '/test.svg')
-  const definition = modelImports['../cmiot-a15-remote/definition.ts']
+  const definition = require('../src/devices/cmiot-a15-remote/definition.ts')
   const variant = compile('src/devices/integration/model.ts', {
-    ...modelImports,
     '../cmiot-a15-remote/definition.ts': { ...definition,
       cmiotA15SupportPackage: { ...definition.cmiotA15SupportPackage,
         remoteView: { ...definition.cmiotA15SupportPackage.remoteView, identities: descriptor.identities },
@@ -639,6 +628,7 @@ test('A15 workspace scopes driver actions, recording mode and input feedback to 
     './applicationProfiles': require('../src/devices/integration/applicationProfiles.ts'),
     '../../components/ProfileSwitchConfirmDialog': { ProfileSwitchConfirmDialog: () => null },
     '../../components/ProfileSwitchDeleteDialog': { ProfileSwitchDeleteDialog: () => null },
+    '../../components/PresetProfileDialog': { PresetProfileDialog: () => null },
     '../../components/SettingsHelp': { SettingsHelp: () => null },
     '../../components/BatteryIndicator': battery,
     '../../components/BehaviorHistoryActions': compile('src/components/BehaviorHistoryActions.tsx'),
@@ -649,6 +639,9 @@ test('A15 workspace scopes driver actions, recording mode and input feedback to 
       window: { innerWidth: 1280, innerHeight: 800, addEventListener() {}, removeEventListener() {} },
     }),
     '../../components/DeviceRail': compile('src/components/DeviceRail.tsx'),
+    '../../components/MappingColumnSplitter': { MappingColumnSplitter: props => React.createElement('column-splitter', props) },
+    '../../components/mappingPanelLayout': require('../src/components/mappingPanelLayout.ts'),
+    '../../components/LegacyMappingEditor': { LegacyMappingEditor: () => null },
     '../../components/WorkflowAxonkey': { WorkflowAxonkey },
     '../../components/QuickOverlayConfigurator': { QuickOverlayConfigurator: () => null },
     '../../components/workflowSplitLayout': require('../src/components/workflowSplitLayout.ts'),
@@ -736,16 +729,14 @@ test('A15 workspace scopes driver actions, recording mode and input feedback to 
     assert.equal(views[0].root.findAllByProps({ className: 'managed-driver-notice' }).length, 1)
     assert.equal(views[1].root.findAllByProps({ className: 'managed-driver-notice' }).length, 0)
     const driverNotice = views[0].root.findByProps({ className: 'managed-driver-notice' })
-    assert.equal(driverNotice.props.role, 'dialog')
-    assert.deepEqual(driverNotice.findAllByType('button').map(text), ['安装驱动', '关闭'])
+    assert.equal(driverNotice.props.role, 'status')
+    assert.equal(driverNotice.props['aria-live'], 'polite')
+    assert.deepEqual(driverNotice.findAllByType('button').map(text), ['安装驱动'])
     assert.ok(text(views[1].root.findByProps({ role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' })).includes('正在录音'))
     assert.ok(!text(views[0].root.findByProps({ className: 'mapping-device-rail panel-surface' })).includes('正在录音'))
     act(() => views[0].root.findByProps({ className: 'managed-driver-notice' }).findAllByType('button')[0].props.onClick())
     act(() => views[1].root.findByProps({ className: 'managed-audio-calibration' }).props.onClick())
     assert.deepEqual(actions, [['install', 'one'], ['calibrate', 'two']])
-    await act(async () => views[0].root.findByProps({ className: 'managed-driver-notice-close' }).props.onClick())
-    assert.equal(views[0].root.findAllByProps({ className: 'managed-driver-notice' }).length, 1)
-    assert.equal(views[0].root.findByProps({ className: 'managed-driver-notice' }).props.role, 'status')
     act(() => views[0].update(React.createElement(InstanceWorkspace, props(0))))
     assert.equal(views[0].root.findAllByProps({ className: 'managed-driver-notice' }).length, 1)
     assert.equal(views[0].root.findByProps({ className: 'managed-driver-notice' }).props.role, 'status')
@@ -758,7 +749,7 @@ test('A15 workspace scopes driver actions, recording mode and input feedback to 
         views[0].update(React.createElement(InstanceWorkspace, props(0)))
       })
       const notice = views[0].root.findByProps({ className: 'managed-driver-notice' })
-      assert.equal(notice.props.role, 'dialog')
+      assert.equal(notice.props.role, 'status')
       assert.ok(text(notice).includes('驱动错误，请重新安装。'))
       assert.equal(text(notice).includes(communicationError), true)
       assert.equal(notice.findByProps({ className: 'managed-driver-notice-details' }).findByType('summary').children[0], '查看错误详情')
@@ -768,11 +759,6 @@ test('A15 workspace scopes driver actions, recording mode and input feedback to 
       assert.equal(views[0].root.findAllByProps({ className: 'managed-error' }).length, 0, 'communication errors are shown once')
       act(() => button.props.onClick())
       assert.deepEqual(actions.at(-1), ['install', 'one'])
-      await act(async () => views[0].root.findByProps({ className: 'managed-driver-notice-close' }).props.onClick())
-      const banner = views[0].root.findByProps({ className: 'managed-driver-notice' })
-      assert.equal(banner.props.role, 'status')
-      assert.equal(text(banner.findByType('span')), '驱动错误，请重新安装。')
-      assert.equal(text(banner).includes(communicationError), false)
       act(() => views[0].update(React.createElement(InstanceWorkspace, {
         ...props(0), driverAction: { instanceId: 'two', status: 'running' },
       })))
@@ -893,8 +879,8 @@ test('A15 workspace scopes driver actions, recording mode and input feedback to 
     for (const [kind, battery, manualRecording, recordingModes, voiceCalibration] of [
       ['rc003', true, false, false, true], ['cmiotA15', true, true, true, true], ['xmBt29', true, true, false, true],
       ['rc313', true, true, false, true], ['obeRcuR5', true, false, false, true], ['xboxBluetooth', false, false, false, false],
-      ['tclRc802a', true, false, false, true], ['tclRc902n', true, false, true, true], ['tclRc902v', true, false, true, true],
-      ['hisenseRcf3b65', true, false, false, false], ['phicommDb1R', true, false, false, false],
+      ['tclRc802a', true, false, false, true], ['tclRc902n', true, false, false, true], ['tclRc902v', true, false, false, true],
+      ['hisenseRcf3b65', true, false, false, false], ['phicommDb1R', true, false, false, false], ['oneplusRc001a', true, false, false, false],
       ['kivoK18Lite', false, false, false, false],
       ['g17Touch', false, false, false, false],
     ]) {
@@ -1139,10 +1125,10 @@ test('migration binding request waits for the saved instance then opens its phys
   const snapshot = { ...model.emptySnapshot(), store: { version: 1, revision: 1, instances: [instance] } }
   act(() => view.update(React.createElement(ControlledDeviceHub, { ...props, controller: { ...props.controller, snapshot } })))
   assert.equal(consumed, 1)
-  assert.match(text(view.root.findByProps({ role: 'dialog' })), /绑定物理设备/)
+  assert.match(text(view.root.findByType('dialog')), /绑定物理设备/)
   act(() => view.update(React.createElement(ControlledDeviceHub, { ...props, bindInstanceId: null, controller: { ...props.controller, snapshot } })))
   act(() => view.root.findByProps({ 'aria-label': '关闭集成' }).props.onClick())
-  assert.equal(view.root.findAllByProps({ role: 'dialog' }).length, 0)
+  assert.equal(view.root.findAllByType('dialog').length, 0)
   assert.equal(consumed, 1)
   act(() => view.unmount())
 })
@@ -1158,6 +1144,7 @@ test('managed device workspace renders undo/redo header actions, handles shortcu
   let modalOpen = false
   const RemoteControl = () => null
   const WorkflowAxonkey = ({ header }) => header
+  const LegacyMappingEditor = ({ header }) => header
   const ApplicationProfileToolbar = () => null
   const { InstanceWorkspace } = compile('src/devices/integration/InstanceWorkspace.tsx', {
     'react-dom': { createPortal: node => node },
@@ -1177,6 +1164,7 @@ test('managed device workspace renders undo/redo header actions, handles shortcu
     './applicationProfiles': require('../src/devices/integration/applicationProfiles.ts'),
     '../../components/ProfileSwitchConfirmDialog': { ProfileSwitchConfirmDialog: () => null },
     '../../components/ProfileSwitchDeleteDialog': { ProfileSwitchDeleteDialog: () => null },
+    '../../components/PresetProfileDialog': { PresetProfileDialog: () => null },
     '../../components/SettingsHelp': { SettingsHelp: () => null },
     '../../components/BatteryIndicator': battery,
     '../../components/BehaviorHistoryActions': compile('src/components/BehaviorHistoryActions.tsx'),
@@ -1187,6 +1175,9 @@ test('managed device workspace renders undo/redo header actions, handles shortcu
       window: { innerWidth: 1280, innerHeight: 800, addEventListener() {}, removeEventListener() {} },
     }),
     '../../components/DeviceRail': compile('src/components/DeviceRail.tsx'),
+    '../../components/MappingColumnSplitter': { MappingColumnSplitter: props => React.createElement('column-splitter', props) },
+    '../../components/mappingPanelLayout': require('../src/components/mappingPanelLayout.ts'),
+    '../../components/LegacyMappingEditor': { LegacyMappingEditor },
     '../../components/WorkflowAxonkey': { WorkflowAxonkey },
     '../../components/QuickOverlayConfigurator': { QuickOverlayConfigurator: () => null },
     '../../components/workflowSplitLayout': require('../src/components/workflowSplitLayout.ts'),
@@ -1227,8 +1218,10 @@ test('managed device workspace renders undo/redo header actions, handles shortcu
   const snapshot = model.emptySnapshot()
   snapshot.store.instances = [instance]
   const toasts = []
+  let mappingStyle = 'flow'
   let view
   const render = () => React.createElement(InstanceWorkspace, {
+    mappingStyle,
     instance,
     controller: {
       snapshot,
@@ -1334,6 +1327,15 @@ test('managed device workspace renders undo/redo header actions, handles shortcu
     act(() => view.update(render()))
     assert.equal(workflow().props.sequences.click[0].key, 'Enter')
     assert.equal(redoBtn().props.disabled, true)
+
+    mappingStyle = 'legacy'
+    act(() => view.update(render()))
+    assert.equal(view.root.findAllByType(WorkflowAxonkey).length, 0)
+    assert.equal(view.root.findByType(LegacyMappingEditor).props.sequences.click[0].key, 'Enter')
+    assert.equal(view.root.findByType(LegacyMappingEditor).props.button.id, selectedId)
+    mappingStyle = 'flow'
+    act(() => view.update(render()))
+    assert.equal(workflow().props.sequences.click[0].key, 'Enter')
 
     // Switching profile resets undo/redo history so undo never restores p1 into p2.
     act(() => {
@@ -1563,7 +1565,7 @@ test('discovery help troubleshoot button opens ConnectionTroubleshootPage in Dev
   }
 })
 
-test('Kivo K18 Lite workspace uses wide single-lane trigger tabs without Windows driver notices and edits per-profile and per-device OLED screen settings', async t => {
+test('Kivo K18 Lite workspace delegates responsive lanes to the workflow and edits per-profile and per-device OLED screen settings', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
   const previewCalls = []
   const screenEditorMod = compile('src/devices/kivo-k18-lite/KivoScreenEditor.tsx', {
@@ -1603,6 +1605,7 @@ test('Kivo K18 Lite workspace uses wide single-lane trigger tabs without Windows
     './applicationProfiles': require('../src/devices/integration/applicationProfiles.ts'),
     '../../components/ProfileSwitchConfirmDialog': { ProfileSwitchConfirmDialog: () => null },
     '../../components/ProfileSwitchDeleteDialog': { ProfileSwitchDeleteDialog: () => null },
+    '../../components/PresetProfileDialog': { PresetProfileDialog: () => null },
     '../../components/SettingsHelp': { SettingsHelp: () => null },
     '../../components/BatteryIndicator': battery,
     '../../components/BehaviorHistoryActions': compile('src/components/BehaviorHistoryActions.tsx'),
@@ -1613,6 +1616,9 @@ test('Kivo K18 Lite workspace uses wide single-lane trigger tabs without Windows
       window: { innerWidth: 1280, innerHeight: 800, addEventListener() {}, removeEventListener() {} },
     }),
     '../../components/DeviceRail': compile('src/components/DeviceRail.tsx'),
+    '../../components/MappingColumnSplitter': { MappingColumnSplitter: props => React.createElement('column-splitter', props) },
+    '../../components/mappingPanelLayout': require('../src/components/mappingPanelLayout.ts'),
+    '../../components/LegacyMappingEditor': { LegacyMappingEditor: () => null },
     '../../components/WorkflowAxonkey': { WorkflowAxonkey },
     '../../components/QuickOverlayConfigurator': { QuickOverlayConfigurator: () => null },
     '../../components/workflowSplitLayout': require('../src/components/workflowSplitLayout.ts'),
@@ -1685,17 +1691,12 @@ test('Kivo K18 Lite workspace uses wide single-lane trigger tabs without Windows
   })
   try {
     const rootDiv = view.root.find(node => node.type === 'div' && node.props.className?.includes('managed-instance-workspace'))
-    assert.match(rootDiv.props.className, /\bis-controller\b/)
-    assert.equal(view.root.findAllByProps({ className: 'remote-stage managed-controller-stage' }).length, 1)
+    assert.equal(rootDiv.props.className, 'mapping-page mapping-flow-page managed-instance-workspace')
+    assert.equal(view.root.findAllByProps({ className: 'remote-stage' }).length, 1)
     assert.equal(view.root.findAllByProps({ className: 'managed-driver-notice' }).length, 0)
     assert.ok(view.root.findByType(RemoteControl).props.screenRegion)
 
-    const triggerGroup = view.root.findByProps({ className: 'managed-workflow-triggers' })
-    const triggerBtns = triggerGroup.findAllByType('button')
-    assert.deepEqual(triggerBtns.map(text), ['单击1', '双击1', '长按0'])
-    assert.equal(view.root.findByType(WorkflowAxonkey).props.activeTrigger, 'click')
-    act(() => triggerBtns[1].props.onClick())
-    assert.equal(view.root.findByType(WorkflowAxonkey).props.activeTrigger, 'doubleClick')
+    assert.equal(view.root.findByType(WorkflowAxonkey).props.activeTrigger, undefined)
 
     // Click OLED screen region -> switches right panel to KivoScreenEditor
     act(() => view.root.findByType(RemoteControl).props.onSelect('__screen__'))
@@ -1825,6 +1826,7 @@ test('rail configured overview shows only configured buttons, excludes sticks/tr
     './applicationProfiles': require('../src/devices/integration/applicationProfiles.ts'),
     '../../components/ProfileSwitchConfirmDialog': { ProfileSwitchConfirmDialog: () => null },
     '../../components/ProfileSwitchDeleteDialog': { ProfileSwitchDeleteDialog: () => null },
+    '../../components/PresetProfileDialog': { PresetProfileDialog: () => null },
     '../../components/SettingsHelp': { SettingsHelp: () => null },
     '../../components/BatteryIndicator': battery,
     '../../components/BehaviorHistoryActions': compile('src/components/BehaviorHistoryActions.tsx'),
@@ -1835,6 +1837,9 @@ test('rail configured overview shows only configured buttons, excludes sticks/tr
       window: { innerWidth: 1280, innerHeight: 800, addEventListener() {}, removeEventListener() {} },
     }),
     '../../components/DeviceRail': compile('src/components/DeviceRail.tsx'),
+    '../../components/MappingColumnSplitter': { MappingColumnSplitter: props => React.createElement('column-splitter', props) },
+    '../../components/mappingPanelLayout': require('../src/components/mappingPanelLayout.ts'),
+    '../../components/LegacyMappingEditor': { LegacyMappingEditor: () => null },
     '../../components/WorkflowAxonkey': { WorkflowAxonkey },
     '../../components/QuickOverlayConfigurator': { QuickOverlayConfigurator: () => null },
     '../../components/workflowSplitLayout': require('../src/components/workflowSplitLayout.ts'),
@@ -2080,6 +2085,94 @@ test('rail configured overview shows only configured buttons, excludes sticks/tr
     assert.equal(view.root.findAll(node => node.props?.className === 'managed-warning').length, 0)
   } finally {
     model.resetRuntimeSupportPackages()
+    act(() => view.unmount())
+  }
+})
+
+test('Windows integration installs the device driver via UAC before entering workspace and handles UAC cancellation', async () => {
+  const remote = { ...device, id: 'xbox-win', kind: 'xboxBluetooth', connected: true }
+  const snapshot = { ...model.emptySnapshot(), discovered: [remote] }
+  const savedCalls = []
+  const installCalls = []
+  let finishInstall = null
+  const controller = {
+    snapshot,
+    busy: false,
+    error: '',
+    async put(instance) {
+      savedCalls.push(instance)
+      const persisted = { ...instance, id: instance.id || 'xbox-instance-1' }
+      snapshot.store.instances = [persisted]
+      return snapshot
+    },
+  }
+  let completedId = ''
+  let view
+  act(() => {
+    view = Renderer.create(
+      React.createElement(DeviceDiscoverySection, {
+        controller,
+        native: true,
+        platform: 'windows',
+        permissions: {},
+        onIntegrated: id => {
+          completedId = id
+        },
+        onInstallDriver: instanceId => {
+          installCalls.push(instanceId)
+          return new Promise(resolve => {
+            finishInstall = resolve
+          })
+        },
+      }),
+    )
+  })
+  try {
+    act(() => view.root.find(node => node.type === 'button' && node.props['data-discovered']).props.onClick())
+    const primary = () => view.root.findByProps({ className: 'managed-primary' })
+    assert.equal(text(primary()), '集成并配置驱动')
+
+    let clickPromise
+    act(() => {
+      clickPromise = primary().props.onClick()
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    assert.equal(savedCalls.length, 1)
+    assert.deepEqual(installCalls, ['xbox-instance-1'])
+    assert.equal(completedId, '', 'does not jump into workspace while UAC prompt is pending')
+    assert.ok(text(view.root.findByProps({ className: 'integration-uac-status' })).includes('Windows UAC'))
+
+    await act(async () => {
+      finishInstall({ ok: false, status: 'error', error: '用户取消了管理员授权' })
+      await clickPromise
+    })
+    assert.equal(completedId, '', 'stays inside integration dialog when UAC is cancelled')
+    assert.ok(
+      text(view.root.findByProps({ className: 'managed-error integration-uac-error' })).includes(
+        '用户取消了管理员授权',
+      ),
+    )
+    const footerButtons = view.root.findByProps({ className: 'managed-dialog-footer' }).findAllByType('button')
+    assert.deepEqual(footerButtons.map(text), ['先进入配键位（稍后安装）', '重新授权安装'])
+
+    let retryPromise
+    act(() => {
+      retryPromise = primary().props.onClick()
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    assert.equal(savedCalls.length, 1, 'retrying UAC reuses the already persisted instance without duplicating')
+    assert.deepEqual(installCalls, ['xbox-instance-1', 'xbox-instance-1'])
+
+    await act(async () => {
+      finishInstall({ ok: true, status: 'installed', message: '按键驱动已安装' })
+      await retryPromise
+    })
+    assert.equal(completedId, 'xbox-instance-1')
+  } finally {
     act(() => view.unmount())
   }
 })

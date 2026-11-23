@@ -79,6 +79,7 @@ pub(crate) struct QuickProfileConfig {
     pub name: String,
     pub device_id: Option<String>,
     pub device_name: Option<String>,
+    pub prompt_mode: bool,
     pub behaviors: HashMap<String, TriggerBehaviors>,
     pub raw_behaviors: serde_json::Value,
 }
@@ -299,6 +300,8 @@ struct RawQuickProfile {
     #[serde(default)]
     device_name: Option<String>,
     #[serde(default)]
+    prompt_mode: bool,
+    #[serde(default)]
     behaviors: serde_json::Value,
 }
 
@@ -343,6 +346,7 @@ where
                 name: entry.name,
                 device_id: entry.device_id,
                 device_name: entry.device_name,
+                prompt_mode: entry.prompt_mode,
                 behaviors,
                 raw_behaviors,
             },
@@ -520,6 +524,14 @@ pub(super) enum NativeBehavior {
         enabled: bool,
         text: String,
     },
+    CopyText {
+        #[serde(default = "enabled_by_default")]
+        enabled: bool,
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        title: Option<String>,
+    },
     OpenPath {
         #[serde(default = "enabled_by_default")]
         enabled: bool,
@@ -546,6 +558,27 @@ pub(super) enum NativeBehavior {
         #[serde(default = "enabled_by_default")]
         enabled: bool,
         url: String,
+    },
+    RunCommand {
+        #[serde(default = "enabled_by_default")]
+        enabled: bool,
+        command: String,
+        #[serde(default, rename = "workingDirectory")]
+        working_directory: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+    },
+    HttpRequest {
+        #[serde(default = "enabled_by_default")]
+        enabled: bool,
+        method: String,
+        url: String,
+        #[serde(default)]
+        headers: Option<std::collections::BTreeMap<String, String>>,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
     },
     SwitchProfile {
         #[serde(default = "enabled_by_default")]
@@ -651,11 +684,14 @@ impl NativeBehavior {
             Self::Key { enabled, .. }
             | Self::Shortcut { enabled, .. }
             | Self::TypeText { enabled, .. }
+            | Self::CopyText { enabled, .. }
             | Self::OpenPath { enabled, .. }
             | Self::Paste { enabled, .. }
             | Self::Delay { enabled, .. }
             | Self::OpenApp { enabled, .. }
             | Self::OpenWebsite { enabled, .. }
+            | Self::RunCommand { enabled, .. }
+            | Self::HttpRequest { enabled, .. }
             | Self::SwitchProfile { enabled, .. }
             | Self::QuickOverlay { enabled, .. }
             | Self::Disabled { enabled } => *enabled,
@@ -857,5 +893,41 @@ mod settings_tests {
             super::cursor_delta(super::WheelDirection::Right, 501),
             (500, 0)
         );
+    }
+
+    #[test]
+    fn quick_profiles_parse_prompt_mode_and_titled_text_behaviors() {
+        let off: NativeSettings = serde_json::from_str(
+            r#"{
+                "quickProfiles": {
+                    "q1": {
+                        "id": "q1",
+                        "name": "Prompt",
+                        "behaviors": {
+                            "up": { "click": [{ "type": "paste", "text": "hello", "title": "打招呼" }] }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(!off.quick_profiles["q1"].prompt_mode);
+        let on: NativeSettings = serde_json::from_str(
+            r#"{
+                "quickProfiles": {
+                    "q1": {
+                        "id": "q1",
+                        "name": "Prompt",
+                        "promptMode": true,
+                        "behaviors": {
+                            "up": { "click": [{ "type": "paste", "text": "hello", "title": "打招呼" }] }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        assert!(on.quick_profiles["q1"].prompt_mode);
+        assert!(off.remote_settings_changed(&on));
     }
 }

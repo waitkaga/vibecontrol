@@ -145,17 +145,43 @@ export function behaviorSummary(
       return preset?.name ?? (behavior.keys.map(key => keyDisplayName(key, platform)).join(' + ') || '未录入')
     }
     case 'typeText':
-      return behavior.text ? `输入：${behavior.text.slice(0, 12)}` : '模拟输入文字'
+      return behavior.title
+        ? `输入：${behavior.title}`
+        : behavior.text
+          ? `输入：${behavior.text.slice(0, 12)}`
+          : '模拟输入文字'
+    case 'copyText':
+      return behavior.title
+        ? `复制：${behavior.title}`
+        : behavior.text
+          ? `复制：${behavior.text.slice(0, 12)}`
+          : '写入剪贴板'
     case 'openPath':
       return `打开：${behavior.path || '文件或文件夹'}`
     case 'paste':
-      return behavior.text ? `粘贴：${behavior.text.slice(0, 12)}` : '粘贴文本'
+      return behavior.title
+        ? `粘贴：${behavior.title}`
+        : behavior.text
+          ? `粘贴：${behavior.text.slice(0, 12)}`
+          : '粘贴文本'
     case 'delay':
       return `等待 ${behavior.ms} 毫秒`
     case 'openApp':
       return behavior.path.split(/[\\/]/).pop() || '打开应用'
     case 'openWebsite':
       return behavior.url || '打开网站'
+    case 'runCommand':
+      return behavior.title
+        ? `命令：${behavior.title}`
+        : behavior.command
+          ? `命令：${behavior.command.slice(0, 20)}`
+          : '执行命令'
+    case 'httpRequest':
+      return behavior.title
+        ? `${behavior.method} ${behavior.title}`
+        : behavior.url
+          ? `${behavior.method} ${behavior.url.slice(0, 24)}`
+          : '发送 HTTP 请求'
     case 'switchProfile':
       return `${behavior.direction === 'previous' ? '上一个' : '下一个'}配置文件${behavior.wrap ? ' · 循环' : ''}`
     case 'quickOverlay': {

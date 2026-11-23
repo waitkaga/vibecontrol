@@ -1469,6 +1469,7 @@ pub(crate) fn audio_targets(snapshot: &DeviceSnapshot) -> Vec<AudioTarget> {
         .instances
         .iter()
         .filter(|instance| instance.binding.is_some())
+        .filter(|instance| cfg!(windows) || instance.kind != "rmfTx800c")
         .filter(
             |instance| match devices::descriptor_registry::voice_engine(&instance.kind) {
                 Some("rc003-atvv" | "tcl-rc902v-atvv") => true,
@@ -2321,6 +2322,8 @@ pub fn run() {
             start_device_services(app.handle()).map_err(std::io::Error::other)?;
             app.manage(PermissionHelperWindowState::default());
             app.manage(profile_switch_overlay::OverlayState::default());
+            #[cfg(target_os = "macos")]
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             quick_overlay::initialize(app.handle());
             #[cfg(not(any(target_os = "macos", windows)))]
             if let Err(error) = profile_switch_overlay::initialize(app.handle()) {
@@ -2332,12 +2335,8 @@ pub fn run() {
                 return Err(error.into());
             }
             if launched_from_cli_request() {
-                #[cfg(target_os = "macos")]
-                let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 log::info!(target: "axonkey::cli", "CLI launch will remain in the background");
             } else if launched_from_autostart() {
-                #[cfg(target_os = "macos")]
-                let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
                 log::info!(target: "axonkey::runtime", "Autostart launch will remain in the background");
             } else {
                 show_main_window(app.handle());

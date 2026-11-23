@@ -319,12 +319,16 @@ test('workspace edits the explicitly selected app while paused and does not foll
     '../shared/RemoteControl': { RemoteControl: nullComponent },
     '../../components/ProfileSwitchConfirmDialog': { ProfileSwitchConfirmDialog: nullComponent },
     '../../components/ProfileSwitchDeleteDialog': { ProfileSwitchDeleteDialog: nullComponent },
+    '../../components/PresetProfileDialog': { PresetProfileDialog: nullComponent },
     '../../components/SettingsHelp': { SettingsHelp: nullComponent }, '../../components/BatteryIndicator': { BatteryIndicator: nullComponent },
     '../../components/BehaviorHistoryActions': compile('src/components/BehaviorHistoryActions.tsx'),
     '../../components/BehaviorSummaryPopover': { BehaviorSummaryPopover: ({ children }) => children },
     '../../components/DeviceRail': { DeviceRecordingStatus: nullComponent },
     '../../telemetry': { reportTencentEvent() {} }, '../../cloud/libraryUsage': { recordLibraryAdditions() {} },
     '../../components/workflowSplitLayout': { defaultWorkflowSplitRatio: .54 },
+    '../../components/MappingColumnSplitter': { MappingColumnSplitter: props => React.createElement('column-splitter', props) },
+    '../../components/mappingPanelLayout': require('../src/components/mappingPanelLayout.ts'),
+    '../../components/LegacyMappingEditor': { LegacyMappingEditor: () => null },
     '../../components/WorkflowAxonkey': { WorkflowAxonkey: props => React.createElement('workflow', props) },
     '../../components/QuickOverlayConfigurator': { QuickOverlayConfigurator: nullComponent },
     '../shared/DeviceSettingsDrawer': { DeviceSettingsDrawer: nullComponent },
@@ -332,6 +336,7 @@ test('workspace edits the explicitly selected app while paused and does not foll
     '../kivo-k18-lite/KivoScreenEditor': { KivoScreenEditor: nullComponent },
     './IntegrationControls': { DeviceBindingPicker: nullComponent },
     './model': require('../src/devices/integration/model.ts'),
+    '../bundledPresets.ts': require('../src/devices/bundledPresets.ts'),
   })
   let current, view
   function Harness() {
